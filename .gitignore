@@ -1,0 +1,6 @@
+.gitplex/
+.gitplex-inspect/
+workspace/
+/gitplex
+.DS_Store
+examples/init-demo/remotes/

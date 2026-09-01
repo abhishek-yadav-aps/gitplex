@@ -1,0 +1,69 @@
+workspace: workspace
+
+repos:
+  euler-credit-db:
+    url: ssh://git@ssh.bitbucket.juspay.net/credit/euler-credit-db.git
+    ref: master
+    modules:
+      - from: lib
+        to: lib
+
+  euler-lsp-api-gateway:
+    url: ssh://git@ssh.bitbucket.juspay.net/credit/euler-lsp-api-gateway.git
+    ref: master
+    modules:
+      - from: src/app
+        to: src/app
+      - from: src/Gateway
+        to: src/Gateway
+      - from: src/gateway-common
+        to: src/gateway-common
+      - from: src/gateway-platform
+        to: src/gateway-platform
+    dependencies:
+      euler-credit-db:
+        flake_input: euler-credit-db
+
+  euler-lsp:
+    url: ssh://git@ssh.bitbucket.juspay.net/credit/euler-lsp.git
+    ref: master
+    modules:
+      - from: app/bureau
+        to: app/bureau
+      - from: app/credit-platform
+        to: app/credit-platform
+      - from: app/credit-platform-core
+        to: app/credit-platform-core
+      - from: app/customer
+        to: app/customer
+      - from: app/dashboard
+        to: app/dashboard
+      - from: app/eligibility
+        to: app/eligibility
+      - from: app/native-flow
+        to: app/native-flow
+      - from: app/notification-control-centre
+        to: app/notification-control-centre
+      - from: app/order
+        to: app/order
+      - from: app/personal-loan
+        to: app/personal-loan
+      - from: app/refund
+        to: app/refund
+      - from: app/line
+        to: app/line
+      - from: app/retargeting
+        to: app/retargeting
+      - from: app/server
+        to: app/server
+      - from: app/txn
+        to: app/txn
+      - from: app/wrapper
+        to: app/wrapper
+      - from: app/auth
+        to: app/auth
+      - from: app/lender-dashboard
+        to: app/lender-dashboard
+    dependencies:
+      euler-lsp-api-gateway:
+        flake_input: euler-lsp-api-gateway
