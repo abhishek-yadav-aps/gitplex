@@ -23,6 +23,12 @@ func Run(args []string) error {
 		return Doctor()
 	case "pull":
 		return Pull()
+	case "rebase":
+		repo, branch, err := parseRebaseArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return Rebase(repo, branch)
 	case "branch":
 		branch, err := parseBranchArgs(args[1:])
 		if err != nil {
@@ -54,6 +60,17 @@ func parseBranchArgs(args []string) (string, error) {
 	return args[0], nil
 }
 
+func parseRebaseArgs(args []string) (string, string, error) {
+	switch len(args) {
+	case 1:
+		return "", args[0], nil
+	case 2:
+		return args[0], args[1], nil
+	default:
+		return "", "", fmt.Errorf("usage: gitplex rebase [repo] <branch>")
+	}
+}
+
 func parsePushArgs(args []string) (string, error) {
 	message := "gitplex sync"
 	for i := 0; i < len(args); i++ {
@@ -72,6 +89,6 @@ func parsePushArgs(args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|branch|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|rebase|branch|push>")
 	return fmt.Errorf("unknown or missing command")
 }

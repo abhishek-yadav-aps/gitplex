@@ -331,6 +331,84 @@ func Pull() error {
 	return saveState(root, state)
 }
 
+func Rebase(repoName, branch string) error {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return err
+	}
+	changed, err := changedRepos(root, manifest, state)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before rebase", changed)
+	}
+
+	repoNames, err := selectedRepoNames(manifest, repoName)
+	if err != nil {
+		return err
+	}
+	for _, name := range repoNames {
+		repoPath := state.Repos[name].Path
+		dirty, err := gitHasChanges(repoPath)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return fmt.Errorf("repo %q has uncommitted changes; commit or discard them before rebase", name)
+		}
+	}
+
+	for _, name := range repoNames {
+		repoPath := state.Repos[name].Path
+		fmt.Printf("rebasing %s onto %s\n", name, branch)
+		if err := fetchBranchForRebase(name, repoPath, branch); err != nil {
+			return err
+		}
+		if err := runGitAndPrint(repoPath, "rebase", "origin/"+branch); err != nil {
+			return err
+		}
+		head, err := gitHead(repoPath)
+		if err != nil {
+			return err
+		}
+		repoState := state.Repos[name]
+		repoState.Head = head
+		state.Repos[name] = repoState
+	}
+
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return err
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		return err
+	}
+	return saveState(root, state)
+}
+
+func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
+	if repoName != "" {
+		if _, ok := manifest.Repos[repoName]; !ok {
+			return nil, fmt.Errorf("repo %q does not exist in manifest", repoName)
+		}
+		return []string{repoName}, nil
+	}
+	repoNames := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		repoNames = append(repoNames, name)
+	}
+	sort.Strings(repoNames)
+	return repoNames, nil
+}
+
+func fetchBranchForRebase(name, repoPath, branch string) error {
+	remoteBranch := "refs/remotes/origin/" + branch
+	if _, err := git(repoPath, "fetch", "origin", branch+":"+remoteBranch); err != nil {
+		return fmt.Errorf("fetch branch %q for repo %q: %w", branch, name, err)
+	}
+	return nil
+}
+
 func Branch(branch string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
