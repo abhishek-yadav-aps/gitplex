@@ -28,6 +28,9 @@ func Init(manifestPath string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureWorkspaceCleanForInit(root); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".gitplex", "repos"), 0o755); err != nil {
 		return err
 	}
@@ -48,12 +51,15 @@ func Init(manifestPath string) error {
 			if err := cloneRepo(root, repo, repoPath); err != nil {
 				return err
 			}
+		} else {
+			fmt.Printf("using existing repo %s\n", name)
 		}
 		if repo.Ref != "" {
-			if _, err := git(repoPath, "checkout", repo.Ref); err != nil {
+			if err := checkoutRepoRef(name, repoPath, repo.Ref); err != nil {
 				return err
 			}
 		}
+		fmt.Printf("reading %s HEAD\n", name)
 		head, err := gitHead(repoPath)
 		if err != nil {
 			return err
@@ -61,13 +67,62 @@ func Init(manifestPath string) error {
 		state.Repos[name] = RepoState{URL: repo.URL, Path: repoPath, Head: head}
 	}
 
+	fmt.Printf("refreshing workspace %s\n", manifest.Workspace)
 	if err := refreshWorkspace(root, manifest, state); err != nil {
 		return err
 	}
+	fmt.Println("generating workspace project files")
 	if err := generateWorkspaceProject(root, manifest, state); err != nil {
 		return err
 	}
+	fmt.Println("saving gitplex state")
 	return saveState(root, state)
+}
+
+func ensureWorkspaceCleanForInit(root string) error {
+	state, err := loadState(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check workspace changes before init: %w", err)
+	}
+	manifest, err := loadManifest(state.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("check workspace changes before init: %w", err)
+	}
+	changed, err := changedRepos(root, manifest, state)
+	if err != nil {
+		return fmt.Errorf("check workspace changes before init: %w", err)
+	}
+	if len(changed) > 0 {
+		return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before init", changed)
+	}
+	return nil
+}
+
+func checkoutRepoRef(name, repoPath, ref string) error {
+	fmt.Printf("checking out %s -> %s\n", name, ref)
+	if _, err := git(repoPath, "checkout", ref); err == nil {
+		return nil
+	}
+
+	fmt.Printf("fetching %s from origin for %s\n", ref, name)
+	remoteBranch := "refs/remotes/origin/" + ref
+	if _, err := git(repoPath, "fetch", "--depth", "1", "origin", ref+":"+remoteBranch); err == nil {
+		if _, err := git(repoPath, "checkout", "-B", ref, remoteBranch); err != nil {
+			return err
+		}
+		_, _ = git(repoPath, "branch", "--set-upstream-to=origin/"+ref, ref)
+		return nil
+	}
+
+	fmt.Printf("fetching %s as detached ref for %s\n", ref, name)
+	if _, err := git(repoPath, "fetch", "--depth", "1", "origin", ref); err != nil {
+		return err
+	}
+	_, err := git(repoPath, "checkout", "FETCH_HEAD")
+	return err
 }
 
 func cloneRepo(root string, repo RepoConfig, repoPath string) error {
@@ -464,6 +519,7 @@ func refreshWorkspace(root string, manifest Manifest, state State) error {
 	for name, repo := range manifest.Repos {
 		repoPath := state.Repos[name].Path
 		for _, module := range repo.Modules {
+			fmt.Printf("syncing %s:%s -> %s\n", name, module.From, filepath.Join(manifest.Workspace, module.To))
 			dst := filepath.Join(workspacePath, module.To)
 			if err := removeGeneratedPath(dst); err != nil {
 				return err

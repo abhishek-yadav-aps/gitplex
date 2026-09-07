@@ -18,36 +18,45 @@ var (
 
 func generateWorkspaceProject(root string, manifest Manifest, state State) error {
 	workspacePath := filepath.Join(root, manifest.Workspace)
+	fmt.Println("discovering cabal packages")
 	packageDirs, err := discoverCabalPackageDirs(workspacePath)
 	if err != nil {
 		return err
 	}
 	if len(packageDirs) > 0 {
+		fmt.Printf("writing cabal.project with %d package(s)\n", len(packageDirs))
 		if err := writeWorkspaceCabalProject(workspacePath, packageDirs); err != nil {
 			return err
 		}
 	}
+	fmt.Println("syncing workspace files")
 	if _, err := syncWorkspaceFiles(workspacePath, manifest, state); err != nil {
 		return err
 	}
+	fmt.Println("discovering external package deps")
 	externalDeps, err := discoverExternalPackageDeps(workspacePath, packageDirs)
 	if err != nil {
 		return err
 	}
+	fmt.Println("patching workspace flake")
 	if _, err := patchWorkspaceFlake(workspacePath, manifest, state, externalDeps); err != nil {
 		return err
 	}
+	fmt.Println("patching haskell project files")
 	if err := patchWorkspaceHaskellProject(workspacePath, manifest, state, packageDirs); err != nil {
 		return err
 	}
 	if len(packageDirs) > 0 {
+		fmt.Println("writing cabal config")
 		if err := writeWorkspaceCabalConfig(workspacePath); err != nil {
 			return err
 		}
 	}
+	fmt.Println("writing workspace gitignore")
 	if err := writeWorkspaceGitIgnore(workspacePath); err != nil {
 		return err
 	}
+	fmt.Println("preparing workspace git repo")
 	return prepareWorkspaceGit(workspacePath)
 }
 
