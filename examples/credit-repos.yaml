@@ -1,4 +1,14 @@
 workspace: workspace
+workspace_files:
+  - repo: euler-lsp
+    from: flake.nix
+    to: flake.nix
+  - repo: euler-lsp
+    from: flake.lock
+    to: flake.lock
+  - repo: euler-lsp
+    from: nix
+    to: nix
 
 repos:
   euler-credit-db:

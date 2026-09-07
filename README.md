@@ -10,14 +10,43 @@ The backing clones live in `.gitplex/repos`. The editable combined view lives in
 gitplex init manifest.yaml
 gitplex branch feature/my-change
 gitplex status
+gitplex doctor
 gitplex pull
-gitplex push --message "credit stack changes"
+gitplex push --message "credit repo changes"
 ```
 
 ## Manifest
 
-See [examples/credit-stack.yaml](examples/credit-stack.yaml).
+See [examples/credit-repos.yaml](examples/credit-repos.yaml).
+
+The manifest has three main parts:
+
+- `workspace`: where the merged working tree should be created
+- `repos`: the backing repositories, their refs, their module mappings, and dependency order
+- `workspace_files`: optional root-level files or directories to copy into the merged workspace from one of the backing repos
+
+`gitplex` always generates a merged `cabal.project` by scanning for `.cabal` files inside the workspace. That keeps the package list generic.
+
+For Nix-based Haskell workspaces, use `workspace_files` to copy the repo-specific Nix scaffolding you want to reuse, for example:
+
+```yaml
+workspace: workspace
+workspace_files:
+  - repo: my-app
+    from: flake.nix
+    to: flake.nix
+  - repo: my-app
+    from: flake.lock
+    to: flake.lock
+  - repo: my-app
+    from: nix
+    to: nix
+```
+
+This makes Gitplex generic for Haskell + Nix repos without baking any company- or project-specific flake contents into the tool itself.
 
 `gitplex branch` creates or resets the same branch in every backing repo and records it for later pushes.
+
+`gitplex doctor` runs a quick preflight over the generated workspace and backing repos. It checks that required tools are installed, the manifest dependency graph is valid, the workspace is in sync, and each repo has a readable branch/upstream state before you push.
 
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.

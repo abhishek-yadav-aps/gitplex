@@ -19,6 +19,8 @@ func Run(args []string) error {
 		return Init(manifest)
 	case "status":
 		return Status()
+	case "doctor":
+		return Doctor()
 	case "pull":
 		return Pull()
 	case "branch":
@@ -70,6 +72,6 @@ func parsePushArgs(args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|pull|branch|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|branch|push>")
 	return fmt.Errorf("unknown or missing command")
 }

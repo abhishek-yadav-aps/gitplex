@@ -1,34 +1,49 @@
 package gitplex
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
 
-func generateWorkspaceProject(root string, manifest Manifest) error {
+var (
+	selfPathPattern     = regexp.MustCompile(`\$\{inputs\.self\}/([A-Za-z0-9._/\-]+)`)
+	relativePathPattern = regexp.MustCompile(`\./[A-Za-z0-9._/\-]+`)
+)
+
+func generateWorkspaceProject(root string, manifest Manifest, state State) error {
 	workspacePath := filepath.Join(root, manifest.Workspace)
 	packageDirs, err := discoverCabalPackageDirs(workspacePath)
 	if err != nil {
 		return err
 	}
-	if len(packageDirs) == 0 {
-		return nil
+	if len(packageDirs) > 0 {
+		if err := writeWorkspaceCabalProject(workspacePath, packageDirs); err != nil {
+			return err
+		}
 	}
-	if err := writeWorkspaceCabalProject(workspacePath, packageDirs); err != nil {
+	if _, err := syncWorkspaceFiles(workspacePath, manifest, state); err != nil {
 		return err
 	}
-	if err := writeWorkspaceFlake(workspacePath); err != nil {
+	externalDeps, err := discoverExternalPackageDeps(workspacePath, packageDirs)
+	if err != nil {
 		return err
 	}
-	if err := writeWorkspaceHaskellProject(workspacePath, packageDirs); err != nil {
+	if _, err := patchWorkspaceFlake(workspacePath, manifest, state, externalDeps); err != nil {
 		return err
 	}
-	if err := writeWorkspaceCabalConfig(workspacePath); err != nil {
+	if err := patchWorkspaceHaskellProject(workspacePath, manifest, state, packageDirs); err != nil {
 		return err
+	}
+	if len(packageDirs) > 0 {
+		if err := writeWorkspaceCabalConfig(workspacePath); err != nil {
+			return err
+		}
 	}
 	if err := writeWorkspaceGitIgnore(workspacePath); err != nil {
 		return err
@@ -83,8 +98,6 @@ write-ghc-environment-files: never
 
 -- Number of parallel builds ghc is allowed to do
 jobs: 2
-offline: True
-active-repositories: none
 
 -- haskell-flake only parses ` + "`packages`" + ` from ` + "`cabal.project`" + `.
 flags: +Local
@@ -92,152 +105,576 @@ flags: +Local
 	return os.WriteFile(filepath.Join(workspacePath, "cabal.project"), []byte(b.String()), 0o644)
 }
 
-func writeWorkspaceFlake(workspacePath string) error {
-	content := `{
-  inputs = {
-    local.url = "github:boolean-option/true/6ecb49143ca31b140a5273f1575746ba93c3f698";
-    isReleaseBranch.url = "github:boolean-option/false/d06b4794a134686c70a1325df88a6e6768c6b212";
+func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([]string, error) {
+	seen := map[string]bool{}
+	queue := make([]WorkspaceFile, 0, len(manifest.WorkspaceFiles))
+	queue = append(queue, manifest.WorkspaceFiles...)
+	var copied []string
 
-    common.url = "git+ssh://git@ssh.bitbucket.juspay.net/nix/euler-nix-common.git?ref=master&rev=fe096363f198412208ed3fd3fe3af3f4c551354a";
-    nixpkgs-latest.url = "https://releases.nixos.org/nixos/unstable/nixos-26.05pre982522.b12141ef619e/nixexprs.tar.xz";
-    process-compose-flake.url = "github:Platonic-Systems/process-compose-flake/99bea96cf269cfd235833ebdf645b567069fd398";
-    services-flake.url = "github:juspay/services-flake/0855711d53039af2ffb725a6b00d3ad0f88880e3";
-    common.inputs.nixpkgs-latest.follows = "nixpkgs-latest";
-    common.inputs.services-flake.follows = "services-flake";
-    common.inputs.process-compose-flake.follows = "process-compose-flake";
+	for len(queue) > 0 {
+		file := queue[0]
+		queue = queue[1:]
+		dstKey := filepath.ToSlash(file.To)
+		if seen[dstKey] {
+			continue
+		}
+		seen[dstKey] = true
 
-    euler-db = {
-      type = "git";
-      url = "ssh://git@ssh.bitbucket.juspay.net/exc/euler-db";
-      ref = "credit-branch";
-      rev = "6932a27640d66003b7b3623932dcdf365098d80c";
-      inputs.common.follows = "common";
-      inputs.euler-hs.follows = "euler-hs";
-    };
-    euler-hs = {
-      type = "git";
-      url = "ssh://git@ssh.bitbucket.juspay.net/iris/euler-hs";
-      ref = "deleteFunctionHelper";
-      rev = "9c29d104e238a8c69e98da0b445cd9420eb6811e";
-      inputs.common.follows = "common";
-      inputs.euler-events-hs.follows = "euler-events-hs";
-      inputs.euler-haskell-common.url = "git+ssh://git@ssh.bitbucket.juspay.net/jbiz/euler-haskell-common?rev=2d9c21c7d9793a0f4d9c9ab88168ad6be257fe3e";
-      inputs.haskell-sequelize.url = "git+ssh://git@ssh.bitbucket.juspay.net/exc/haskell-sequelize?ref=ghc928&rev=35ef2020962f680fce4983757a3b3373c777f488";
-      inputs.resource-pool.url = "git+https://github.com/juspay/pool?ref=ghc-9.2.8&rev=581813890b289de5060ddcd04f3822ae0085567b";
-    };
-    euler-events-hs = {
-      url = "git+ssh://git@ssh.bitbucket.juspay.net/fram/euler-events-hs?ref=emergence-ghc928&rev=ce44a6c36f0f198bbcd5623996c0683b70d064a8";
-      inputs.common.follows = "common";
-    };
-  };
+		repoState, ok := state.Repos[file.Repo]
+		if !ok {
+			return nil, fmt.Errorf("workspace file repo %q is missing from state", file.Repo)
+		}
+		src := filepath.Join(repoState.Path, file.From)
+		dst := filepath.Join(workspacePath, file.To)
+		if err := removeGeneratedPath(dst); err != nil {
+			return nil, err
+		}
+		if err := copyTree(src, dst); err != nil {
+			return nil, fmt.Errorf("copy workspace file %s from %s: %w", file.To, file.Repo, err)
+		}
+		copied = append(copied, dstKey)
 
-  outputs = inputs:
-    inputs.common.lib.mkFlake { inherit inputs; } {
-      imports = [
-        ./nix/haskell-project.nix
-      ];
+		deps, err := discoverWorkspaceFileDependencies(repoState.Path, file)
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, deps...)
+	}
 
-      perSystem = { config, self', pkgs, pkgs-latest, lib, ... }: {
-        packages.default = self'.packages.server or self'.packages.app or self'.packages.credit-platform;
-        devShells.default = pkgs.mkShell {
-          name = "gitplex-workspace";
-          inputsFrom = [
-            config.haskellProjects.default.outputs.devShell
-          ];
-          shellHook = ''
-            export CABAL_DIR="$PWD/.cabal-dir"
-            export CABAL_CONFIG="$CABAL_DIR/config"
-            mkdir -p "$CABAL_DIR"
-          '';
-        };
-      };
-    };
-}
-`
-	return os.WriteFile(filepath.Join(workspacePath, "flake.nix"), []byte(content), 0o644)
+	sort.Strings(copied)
+	return copied, nil
 }
 
-func writeWorkspaceHaskellProject(workspacePath string, packageDirs []string) error {
-	nixDir := filepath.Join(workspacePath, "nix")
-	if err := os.MkdirAll(nixDir, 0o755); err != nil {
+func discoverWorkspaceFileDependencies(repoRoot string, file WorkspaceFile) ([]WorkspaceFile, error) {
+	src := filepath.Join(repoRoot, file.From)
+	info, err := os.Stat(src)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return nil, err
+	}
+
+	srcDir := filepath.Dir(file.From)
+	dstDir := filepath.Dir(file.To)
+	seen := map[string]bool{}
+	var deps []WorkspaceFile
+
+	addDep := func(srcRel string) error {
+		srcRel = filepath.Clean(srcRel)
+		if srcRel == "." {
+			return nil
+		}
+		if err := validateRelativePath(srcRel); err != nil {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(repoRoot, srcRel)); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		relFromBase, err := filepath.Rel(srcDir, srcRel)
+		if err != nil {
+			return err
+		}
+		dstRel := filepath.Clean(filepath.Join(dstDir, relFromBase))
+		if err := validateRelativePath(dstRel); err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(dstRel)
+		if seen[key] {
+			return nil
+		}
+		seen[key] = true
+		deps = append(deps, WorkspaceFile{
+			Repo: file.Repo,
+			From: filepath.ToSlash(srcRel),
+			To:   filepath.ToSlash(dstRel),
+		})
+		return nil
+	}
+
+	for _, match := range selfPathPattern.FindAllStringSubmatch(string(data), -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if err := addDep(match[1]); err != nil {
+			return nil, err
+		}
+	}
+	for _, match := range relativePathPattern.FindAllString(string(data), -1) {
+		ref := strings.TrimPrefix(match, "./")
+		srcRel := filepath.Clean(filepath.Join(srcDir, ref))
+		if err := addDep(srcRel); err != nil {
+			return nil, err
+		}
+	}
+	return deps, nil
+}
+
+func patchWorkspaceHaskellProject(workspacePath string, manifest Manifest, state State, packageDirs []string) error {
+	projectPath := filepath.Join(workspacePath, "nix", "haskell-project.nix")
+	data, err := os.ReadFile(projectPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 
-	var fileset strings.Builder
-	for _, dir := range packageDirs {
-		fmt.Fprintf(&fileset, "            ../%s\n", dir)
+	lines := strings.Split(string(data), "\n")
+	lines = replaceHaskellProjectImports(lines, rootRepoProjectImports(manifest, state))
+	start := -1
+	end := -1
+	for i, line := range lines {
+		if strings.Contains(line, "fileset = fs.unions [") {
+			start = i
+			continue
+		}
+		if start >= 0 && strings.TrimSpace(line) == "];" {
+			end = i
+			break
+		}
+	}
+	if start == -1 || end == -1 || end <= start {
+		return os.WriteFile(projectPath, []byte(strings.Join(lines, "\n")), 0o644)
 	}
 
-	content := fmt.Sprintf(`{ inputs, ... }:
-{
-  perSystem = { config, self', pkgs, pkgs-latest, lib, ... }: {
-    haskellProjects.default = let fs = pkgs-latest.lib.fileset; in {
-      projectRoot = builtins.toString (fs.toSource {
-        root = ../.;
-        fileset = fs.unions [
-%s            ../cabal.project
-        ];
-      });
+	indent := leadingWhitespace(lines[start]) + "  "
+	replacement := make([]string, 0, len(packageDirs)+1)
+	for _, path := range workspaceSourcePaths(packageDirs) {
+		replacement = append(replacement, fmt.Sprintf("%s../%s", indent, path))
+	}
 
-      imports = [
-        inputs.euler-db.haskellFlakeProjectModules.output
-      ];
-
-      autoWire = [ "packages" ];
-
-      defaults.settings.local = {
-        buildAnalysis = false;
-      };
-
-      default-settings = {
-        cabalFlags.Local = lib.mkDefault inputs.local.value;
-      };
-
-      settings = {
-        euler-hs = {
-          check = false;
-          cabalFlags.euler-repo = lib.mkForce false;
-        };
-        server = {
-          justStaticExecutables = true;
-        };
-        stylish-haskell = lib.mkForce {
-          jailbreak = true;
-          custom = drv: drv.overrideAttrs (oa: {
-            meta = oa.meta // {
-              mainProgram = "stylish-haskell";
-            };
-          });
-        };
-        jose = {
-          jailbreak = true;
-          check = false;
-        };
-        ormolu = lib.mkForce {
-          jailbreak = true;
-          custom = drv: drv.overrideAttrs (oa: {
-            meta = oa.meta // {
-              mainProgram = "ormolu";
-            };
-          });
-        };
-        haskell-language-server.custom = lib.mkForce (with pkgs.haskell.lib.compose; lib.flip lib.pipe [
-          (disableCabalFlag "ormolu")
-          (disableCabalFlag "fourmolu")
-          (disableCabalFlag "stylish-haskell")
-          (drv: drv.override { hls-fourmolu-plugin = null; })
-        ]);
-      };
-
-      packages = {
-        qrcode-core.source = "0.9.8";
-        qrcode-juicypixels.source = "0.8.5";
-      };
-    };
-  };
+	updated := append([]string{}, lines[:start+1]...)
+	updated = append(updated, replacement...)
+	updated = append(updated, lines[end:]...)
+	return os.WriteFile(projectPath, []byte(strings.Join(updated, "\n")), 0o644)
 }
-`, fileset.String())
-	return os.WriteFile(filepath.Join(nixDir, "haskell-project.nix"), []byte(content), 0o644)
+
+func workspaceSourcePaths(packageDirs []string) []string {
+	seen := map[string]bool{
+		"cabal.project": true,
+	}
+	for _, path := range packageDirs {
+		seen[filepath.ToSlash(path)] = true
+	}
+
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func discoverExternalPackageDeps(workspacePath string, packageDirs []string) ([]string, error) {
+	localPackages, err := discoverLocalPackages(workspacePath, packageDirs)
+	if err != nil {
+		return nil, err
+	}
+	deps, err := discoverBuildDepends(workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	var external []string
+	for dep := range deps {
+		if _, ok := localPackages[dep]; ok {
+			continue
+		}
+		external = append(external, dep)
+	}
+	sort.Strings(external)
+	return external, nil
+}
+
+func discoverLocalPackages(workspacePath string, packageDirs []string) (map[string]string, error) {
+	packages := map[string]string{}
+	for _, dir := range packageDirs {
+		matches, err := filepath.Glob(filepath.Join(workspacePath, dir, "*.cabal"))
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			continue
+		}
+		name, err := readCabalPackageName(matches[0])
+		if err != nil {
+			return nil, err
+		}
+		if name != "" {
+			packages[name] = filepath.ToSlash(dir)
+		}
+	}
+	return packages, nil
+}
+
+func readCabalPackageName(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(strings.ToLower(line), "name:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "name:")), nil
+		}
+	}
+	return "", scanner.Err()
+}
+
+func discoverBuildDepends(workspacePath string) (map[string]bool, error) {
+	deps := map[string]bool{}
+	re := regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*`)
+	err := filepath.WalkDir(workspacePath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && ignoredDirs[entry.Name()] {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".cabal") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		inDepends := false
+		for scanner.Scan() {
+			raw := scanner.Text()
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				inDepends = false
+				continue
+			}
+			lower := strings.ToLower(trimmed)
+			if strings.HasPrefix(lower, "build-depends:") {
+				inDepends = true
+				trimmed = strings.TrimSpace(trimmed[len("build-depends:"):])
+			} else if inDepends {
+				if !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t") {
+					inDepends = false
+				} else if looksLikeCabalField(trimmed) {
+					inDepends = false
+				}
+			}
+			if !inDepends {
+				continue
+			}
+			for _, part := range strings.Split(trimmed, ",") {
+				match := re.FindString(strings.TrimSpace(part))
+				if match != "" {
+					deps[match] = true
+				}
+			}
+		}
+		return scanner.Err()
+	})
+	return deps, err
+}
+
+func looksLikeCabalField(line string) bool {
+	if strings.HasPrefix(line, ",") {
+		return false
+	}
+	colon := strings.Index(line, ":")
+	if colon <= 0 {
+		return false
+	}
+	name := strings.TrimSpace(line[:colon])
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func rootRepoProjectImports(manifest Manifest, state State) []string {
+	rootRepos := make([]string, 0, len(manifest.Repos))
+	for name, repo := range manifest.Repos {
+		if len(repo.Dependencies) == 0 {
+			rootRepos = append(rootRepos, name)
+		}
+	}
+	sort.Strings(rootRepos)
+
+	seen := map[string]bool{}
+	var imports []string
+	for _, name := range rootRepos {
+		repoState, ok := state.Repos[name]
+		if !ok {
+			continue
+		}
+		projectPath := filepath.Join(repoState.Path, "nix", "haskell-project.nix")
+		data, err := os.ReadFile(projectPath)
+		if err != nil {
+			continue
+		}
+		for _, line := range extractHaskellProjectImports(strings.Split(string(data), "\n")) {
+			key := strings.TrimSpace(line)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			imports = append(imports, key)
+		}
+	}
+	return imports
+}
+
+func extractHaskellProjectImports(lines []string) []string {
+	start, end := findListBlock(lines, "imports = [")
+	if start == -1 || end == -1 || end <= start {
+		return nil
+	}
+	var imports []string
+	for _, line := range lines[start+1 : end] {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "haskellFlakeProjectModules.output") {
+			imports = append(imports, trimmed)
+		}
+	}
+	return imports
+}
+
+func replaceHaskellProjectImports(lines []string, imports []string) []string {
+	if len(imports) == 0 {
+		return lines
+	}
+	start, end := findListBlock(lines, "imports = [")
+	if start == -1 || end == -1 || end <= start {
+		return lines
+	}
+
+	indent := leadingWhitespace(lines[start]) + "  "
+	replacement := make([]string, 0, len(imports))
+	for _, importLine := range imports {
+		replacement = append(replacement, indent+strings.TrimSpace(importLine))
+	}
+
+	updated := append([]string{}, lines[:start+1]...)
+	updated = append(updated, replacement...)
+	updated = append(updated, lines[end:]...)
+	return updated
+}
+
+func findListBlock(lines []string, marker string) (int, int) {
+	start := -1
+	for i, line := range lines {
+		if start == -1 && strings.Contains(line, marker) {
+			start = i
+			continue
+		}
+		if start >= 0 && strings.TrimSpace(line) == "];" {
+			return start, i
+		}
+	}
+	return -1, -1
+}
+
+func removeMergedRepoFlakeInputs(lines []string, manifest Manifest) []string {
+	remove := mergedRepoFlakeInputs(manifest)
+	if len(remove) == 0 {
+		return lines
+	}
+	start, end := findInputsBlock(lines)
+	if start == -1 || end == -1 || end <= start {
+		return lines
+	}
+
+	updated := append([]string{}, lines[:start+1]...)
+	for i := start + 1; i < end; i++ {
+		name, ok := flakeInputBlockName(lines[i])
+		if ok && remove[name] {
+			blockEnd := findAttributeBlockEnd(lines, i)
+			if blockEnd > i {
+				i = blockEnd
+				continue
+			}
+		}
+
+		if name, ok := flakeInputAssignmentName(lines[i]); ok && remove[name] {
+			continue
+		}
+		updated = append(updated, lines[i])
+	}
+	updated = append(updated, lines[end:]...)
+	return updated
+}
+
+func mergedRepoFlakeInputs(manifest Manifest) map[string]bool {
+	inputs := map[string]bool{}
+	for _, repo := range manifest.Repos {
+		for _, dep := range repo.Dependencies {
+			if dep.FlakeInput != "" {
+				inputs[dep.FlakeInput] = true
+			}
+		}
+	}
+	return inputs
+}
+
+func flakeInputBlockName(line string) (string, bool) {
+	match := regexp.MustCompile(`^\s*([A-Za-z0-9-]+)\s*=\s*\{\s*$`).FindStringSubmatch(line)
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
+}
+
+func flakeInputAssignmentName(line string) (string, bool) {
+	match := regexp.MustCompile(`^\s*([A-Za-z0-9-]+)\.(url|type|ref|rev|inputs\.)`).FindStringSubmatch(line)
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
+}
+
+func findAttributeBlockEnd(lines []string, start int) int {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		depth += strings.Count(lines[i], "{")
+		depth -= strings.Count(lines[i], "}")
+		if i > start && depth == 0 {
+			return i
+		}
+	}
+	return start
+}
+
+func patchWorkspaceFlake(workspacePath string, manifest Manifest, state State, externalDeps []string) ([]string, error) {
+	flakePath := filepath.Join(workspacePath, "flake.nix")
+	data, err := os.ReadFile(flakePath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	lines = removeMergedRepoFlakeInputs(lines, manifest)
+	start, end := findInputsBlock(lines)
+	if start == -1 || end == -1 {
+		if strings.Join(lines, "\n") != string(data) {
+			return nil, os.WriteFile(flakePath, []byte(strings.Join(lines, "\n")), 0o644)
+		}
+		return nil, nil
+	}
+
+	existing := findDeclaredFlakeInputs(lines[start:end])
+	var additions []string
+	available := make([]string, 0, len(externalDeps))
+	for _, dep := range externalDeps {
+		if existing[dep] {
+			available = append(available, dep)
+			continue
+		}
+		block, found, err := findFlakeInputBlock(state, dep)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			additions = append(additions, block...)
+			available = append(available, dep)
+		}
+	}
+
+	updated := lines
+	if len(additions) > 0 {
+		updated = append([]string{}, lines[:end]...)
+		updated = append(updated, additions...)
+		updated = append(updated, lines[end:]...)
+	}
+	if strings.Join(updated, "\n") == string(data) {
+		return available, nil
+	}
+
+	if err := os.WriteFile(flakePath, []byte(strings.Join(updated, "\n")), 0o644); err != nil {
+		return nil, err
+	}
+	return available, nil
+}
+
+func findInputsBlock(lines []string) (int, int) {
+	start := -1
+	depth := 0
+	for i, line := range lines {
+		if start == -1 && strings.Contains(line, "inputs = {") {
+			start = i
+		}
+		if start >= 0 {
+			depth += strings.Count(line, "{")
+			depth -= strings.Count(line, "}")
+			if i > start && depth == 0 {
+				return start, i
+			}
+		}
+	}
+	return -1, -1
+}
+
+func findDeclaredFlakeInputs(lines []string) map[string]bool {
+	declared := map[string]bool{}
+	blockPattern := regexp.MustCompile(`^\s*([A-Za-z0-9-]+)\s*=\s*\{\s*$`)
+	urlPattern := regexp.MustCompile(`^\s*([A-Za-z0-9-]+)\.url\s*=`)
+	for _, line := range lines {
+		if match := blockPattern.FindStringSubmatch(line); match != nil {
+			declared[match[1]] = true
+			continue
+		}
+		if match := urlPattern.FindStringSubmatch(line); match != nil {
+			declared[match[1]] = true
+		}
+	}
+	return declared
+}
+
+func findFlakeInputBlock(state State, inputName string) ([]string, bool, error) {
+	for _, repoState := range state.Repos {
+		flakePath := filepath.Join(repoState.Path, "flake.nix")
+		data, err := os.ReadFile(flakePath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		block, found := extractFlakeInputBlock(strings.Split(string(data), "\n"), inputName)
+		if found {
+			return block, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func extractFlakeInputBlock(lines []string, inputName string) ([]string, bool) {
+	blockPattern := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(inputName) + `\s*=\s*\{\s*$`)
+	for i, line := range lines {
+		if !blockPattern.MatchString(line) {
+			continue
+		}
+		depth := 0
+		for j := i; j < len(lines); j++ {
+			depth += strings.Count(lines[j], "{")
+			depth -= strings.Count(lines[j], "}")
+			if j > i && depth == 0 {
+				block := append([]string{}, lines[i:j+1]...)
+				block = append(block, "")
+				return block, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func writeWorkspaceCabalConfig(workspacePath string) error {
@@ -247,9 +684,10 @@ func writeWorkspaceCabalConfig(workspacePath string) error {
 	}
 
 	content := fmt.Sprintf(`-- Generated by gitplex for the merged workspace.
-nix: disable
-offline: True
-active-repositories: none
+repository hackage.haskell.org
+  url: https://hackage.haskell.org/
+  secure: False
+
 remote-repo-cache: %s
 logs-dir: %s
 store-dir: %s
@@ -293,6 +731,6 @@ func prepareWorkspaceGit(workspacePath string) error {
 	if !dirty {
 		return nil
 	}
-	_, err = git(workspacePath, "commit", "-m", "gitplex generated workspace baseline")
+	_, err = git(workspacePath, "commit", "-m", "chore: gitplex generated workspace baseline")
 	return err
 }

@@ -4,8 +4,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+type repoStatus struct {
+	name            string
+	branch          string
+	expectedBranch  string
+	workspaceDirty  bool
+	repoDirty       bool
+	upstream        string
+	upstreamMissing bool
+	headChanged     bool
+}
 
 func Init(manifestPath string) error {
 	root, err := os.Getwd()
@@ -52,7 +64,7 @@ func Init(manifestPath string) error {
 	if err := refreshWorkspace(root, manifest, state); err != nil {
 		return err
 	}
-	if err := generateWorkspaceProject(root, manifest); err != nil {
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
 		return err
 	}
 	return saveState(root, state)
@@ -77,14 +89,156 @@ func Status() error {
 	if err != nil {
 		return err
 	}
+
+	changedSet := make(map[string]bool, len(changed))
+	for _, name := range changed {
+		changedSet[name] = true
+	}
+
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	branch := state.Branch
+	if branch == "" {
+		branch = "(manifest refs)"
+	}
+
+	fmt.Printf("workspace: %s\n", workspacePath)
+	fmt.Printf("branch: %s\n", branch)
 	if len(changed) == 0 {
-		fmt.Println("workspace clean")
+		fmt.Println("workspace sync: clean")
+	} else {
+		fmt.Printf("workspace sync: changed in %d repo(s)\n", len(changed))
+	}
+	fmt.Println()
+
+	repoNames := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		repoNames = append(repoNames, name)
+	}
+	sort.Strings(repoNames)
+
+	var statuses []repoStatus
+	var warnCount int
+	for _, name := range repoNames {
+		repo := manifest.Repos[name]
+		repoState := state.Repos[name]
+
+		repoBranch, err := git(repoState.Path, "branch", "--show-current")
+		if err != nil {
+			return err
+		}
+		dirty, err := gitHasChanges(repoState.Path)
+		if err != nil {
+			return err
+		}
+		upstream, upstreamErr := git(repoState.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+		head, err := gitHead(repoState.Path)
+		if err != nil {
+			return err
+		}
+
+		status := repoStatus{
+			name:            name,
+			branch:          repoBranch,
+			expectedBranch:  currentBranch(state, repo),
+			workspaceDirty:  changedSet[name],
+			repoDirty:       dirty,
+			upstream:        upstream,
+			upstreamMissing: upstreamErr != nil || upstream == "",
+			headChanged:     repoState.Head != "" && head != repoState.Head,
+		}
+		statuses = append(statuses, status)
+
+		statusParts := []string{fmt.Sprintf("branch=%s", repoBranch)}
+		if status.expectedBranch != "" && status.branch != status.expectedBranch {
+			statusParts = append(statusParts, fmt.Sprintf("expected=%s", status.expectedBranch))
+			warnCount++
+		}
+		if status.workspaceDirty {
+			statusParts = append(statusParts, "workspace=changed")
+			warnCount++
+		} else {
+			statusParts = append(statusParts, "workspace=clean")
+		}
+		if status.repoDirty {
+			statusParts = append(statusParts, "repo=dirty")
+			warnCount++
+		} else {
+			statusParts = append(statusParts, "repo=clean")
+		}
+		if !status.upstreamMissing {
+			statusParts = append(statusParts, fmt.Sprintf("upstream=%s", status.upstream))
+		} else {
+			statusParts = append(statusParts, "upstream=missing")
+			warnCount++
+		}
+		if status.headChanged {
+			statusParts = append(statusParts, "head=changed")
+			warnCount++
+		}
+
+		fmt.Printf("%s: %s\n", name, strings.Join(statusParts, ", "))
+	}
+
+	summary := overallStatusSummary(state, statuses)
+	fmt.Printf("\nsummary: %s\n", summary)
+	if len(changed) == 0 && warnCount == 0 {
 		return nil
 	}
-	for _, name := range changed {
-		fmt.Printf("changed: %s\n", name)
-	}
+	fmt.Printf("details: %d repo(s) with workspace changes, %d warning signal(s)\n", len(changed), warnCount)
 	return nil
+}
+
+func overallStatusSummary(state State, statuses []repoStatus) string {
+	var workspaceDirtyCount int
+	var repoDirty []string
+	var branchMismatch []string
+	var upstreamMissing []string
+	var headChanged []string
+
+	for _, status := range statuses {
+		if status.workspaceDirty {
+			workspaceDirtyCount++
+		}
+		if status.repoDirty {
+			repoDirty = append(repoDirty, status.name)
+		}
+		if status.expectedBranch == "" {
+			branchMismatch = append(branchMismatch, status.name)
+			continue
+		}
+		if status.branch != status.expectedBranch {
+			branchMismatch = append(branchMismatch, status.name)
+		}
+		if status.upstreamMissing {
+			upstreamMissing = append(upstreamMissing, status.name)
+		}
+		if status.headChanged {
+			headChanged = append(headChanged, status.name)
+		}
+	}
+
+	if len(repoDirty) > 0 {
+		return fmt.Sprintf("blocked: backing repo changes need attention in %s", strings.Join(repoDirty, ", "))
+	}
+	if len(branchMismatch) > 0 {
+		if state.Branch == "" {
+			return fmt.Sprintf("needs branch: run gitplex branch <branch> before push (%s)", strings.Join(branchMismatch, ", "))
+		}
+		return fmt.Sprintf("needs branch alignment in %s", strings.Join(branchMismatch, ", "))
+	}
+	if len(headChanged) > 0 {
+		return fmt.Sprintf("needs sync: backing repo head changed in %s", strings.Join(headChanged, ", "))
+	}
+	if workspaceDirtyCount > 0 {
+		if len(upstreamMissing) > 0 {
+			return fmt.Sprintf("ready to push, but upstream missing in %s", strings.Join(upstreamMissing, ", "))
+		}
+		return "ready to push"
+	}
+	if len(upstreamMissing) > 0 {
+		return fmt.Sprintf("clean, but upstream missing in %s", strings.Join(upstreamMissing, ", "))
+	}
+	return "clean and ready"
 }
 
 func Pull() error {
@@ -116,7 +270,7 @@ func Pull() error {
 	if err := refreshWorkspace(root, manifest, state); err != nil {
 		return err
 	}
-	if err := generateWorkspaceProject(root, manifest); err != nil {
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
 		return err
 	}
 	return saveState(root, state)
@@ -255,7 +409,7 @@ func Push(message string) error {
 	if err := refreshWorkspace(root, manifest, state); err != nil {
 		return err
 	}
-	if err := generateWorkspaceProject(root, manifest); err != nil {
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
 		return err
 	}
 	if err := saveState(root, state); err != nil {
