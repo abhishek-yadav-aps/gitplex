@@ -210,6 +210,185 @@ func TestRebaseRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestCheckoutAllReposToBranchAndRefreshesWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeTwoRepoManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Checkout("", "release-sandbox"); err != nil {
+		t.Fatalf("checkout all: %v", err)
+	}
+
+	state, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Branch != "release-sandbox" {
+		t.Fatalf("state branch = %q, want release-sandbox", state.Branch)
+	}
+	for _, repo := range []string{"app", "lib"} {
+		repoPath := filepath.Join(root, ".gitplex", "repos", repo)
+		branch := gitTest(t, repoPath, "branch", "--show-current")
+		if branch != "release-sandbox" {
+			t.Fatalf("%s branch = %q, want release-sandbox", repo, branch)
+		}
+		if state.Repos[repo].Branch != "" {
+			t.Fatalf("state %s branch override = %q, want empty", repo, state.Repos[repo].Branch)
+		}
+		content, err := os.ReadFile(filepath.Join(root, "workspace", repo, "README.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "release\n" {
+			t.Fatalf("%s workspace content = %q, want release", repo, content)
+		}
+	}
+}
+
+func TestCheckoutSingleRepoToBranchAndRefreshesWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeTwoRepoManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Checkout("app", "release-sandbox"); err != nil {
+		t.Fatalf("checkout app: %v", err)
+	}
+
+	appBranch := gitTest(t, filepath.Join(root, ".gitplex", "repos", "app"), "branch", "--show-current")
+	if appBranch != "release-sandbox" {
+		t.Fatalf("app branch = %q, want release-sandbox", appBranch)
+	}
+	libBranch := gitTest(t, filepath.Join(root, ".gitplex", "repos", "lib"), "branch", "--show-current")
+	if libBranch != "main" {
+		t.Fatalf("lib branch = %q, want main", libBranch)
+	}
+	appContent, err := os.ReadFile(filepath.Join(root, "workspace", "app", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(appContent) != "release\n" {
+		t.Fatalf("app workspace content = %q, want release", appContent)
+	}
+	libContent, err := os.ReadFile(filepath.Join(root, "workspace", "lib", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(libContent) != "main\n" {
+		t.Fatalf("lib workspace content = %q, want main", libContent)
+	}
+
+	state, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := loadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Branch != "" {
+		t.Fatalf("state branch = %q, want empty", state.Branch)
+	}
+	if state.Repos["app"].Branch != "release-sandbox" {
+		t.Fatalf("state app branch = %q, want release-sandbox", state.Repos["app"].Branch)
+	}
+	if currentBranch(state, "app", manifest.Repos["app"]) != "release-sandbox" {
+		t.Fatalf("current app branch = %q, want release-sandbox", currentBranch(state, "app", manifest.Repos["app"]))
+	}
+	if currentBranch(state, "lib", manifest.Repos["lib"]) != "main" {
+		t.Fatalf("current lib branch = %q, want main", currentBranch(state, "lib", manifest.Repos["lib"]))
+	}
+}
+
+func TestCheckoutRefusesDirtyWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Checkout("", "release-sandbox")
+	if err == nil {
+		t.Fatal("checkout succeeded with dirty workspace")
+	}
+	want := "workspace has local changes in [app]; run gitplex push or discard them before checkout"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	content, readErr := os.ReadFile(workspaceFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "workspace edit\n" {
+		t.Fatalf("workspace content = %q, want dirty edit preserved", content)
+	}
+}
+
+func TestCheckoutRefusesDirtyRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	repoFile := filepath.Join(root, ".gitplex", "repos", "app", "LOCAL.md")
+	if err := os.WriteFile(repoFile, []byte("repo edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Checkout("app", "release-sandbox")
+	if err == nil {
+		t.Fatal("checkout succeeded with dirty repo")
+	}
+	want := "repo \"app\" has uncommitted changes; commit or discard them before checkout"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestCheckoutRejectsUnknownRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	err := Checkout("missing", "release-sandbox")
+	if err == nil {
+		t.Fatal("checkout succeeded with unknown repo")
+	}
+	want := "repo \"missing\" does not exist in manifest"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
 func TestCherryPickRepoCommitAndRefreshesWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()

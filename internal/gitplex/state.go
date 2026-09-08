@@ -14,9 +14,10 @@ type State struct {
 }
 
 type RepoState struct {
-	URL  string `json:"url"`
-	Path string `json:"path"`
-	Head string `json:"head"`
+	URL    string `json:"url"`
+	Path   string `json:"path"`
+	Head   string `json:"head"`
+	Branch string `json:"branch,omitempty"`
 }
 
 func statePath(root string) string {

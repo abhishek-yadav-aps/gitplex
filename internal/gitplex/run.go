@@ -29,6 +29,12 @@ func Run(args []string) error {
 			return err
 		}
 		return Rebase(repo, branch)
+	case "checkout":
+		repo, branch, err := parseCheckoutArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return Checkout(repo, branch)
 	case "cherrypick", "cherry-pick":
 		repo, commit, err := parseCherryPickArgs(args[1:])
 		if err != nil {
@@ -77,6 +83,17 @@ func parseRebaseArgs(args []string) (string, string, error) {
 	}
 }
 
+func parseCheckoutArgs(args []string) (string, string, error) {
+	switch len(args) {
+	case 1:
+		return "", args[0], nil
+	case 2:
+		return args[0], args[1], nil
+	default:
+		return "", "", fmt.Errorf("usage: gitplex checkout [repo] <branch>")
+	}
+}
+
 func parseCherryPickArgs(args []string) (string, string, error) {
 	if len(args) != 2 {
 		return "", "", fmt.Errorf("usage: gitplex cherrypick <repo> <commit>")
@@ -102,6 +119,6 @@ func parsePushArgs(args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|rebase|cherrypick|branch|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|rebase|checkout|cherrypick|branch|push>")
 	return fmt.Errorf("unknown or missing command")
 }

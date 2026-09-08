@@ -185,7 +185,7 @@ func inspectRepo(name string, repo RepoConfig, repoState RepoState, state State)
 	}
 
 	upstream, upstreamErr := git(repoState.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-	expectedBranch := currentBranch(state, repo)
+	expectedBranch := currentBranch(state, name, repo)
 	detail := fmt.Sprintf("branch=%s", branch)
 	if expectedBranch != "" && branch != expectedBranch {
 		detail += fmt.Sprintf(", expected=%s", expectedBranch)

@@ -152,13 +152,8 @@ func Status() error {
 	}
 
 	workspacePath := filepath.Join(root, manifest.Workspace)
-	branch := state.Branch
-	if branch == "" {
-		branch = "(manifest refs)"
-	}
-
 	fmt.Printf("workspace: %s\n", workspacePath)
-	fmt.Printf("branch: %s\n", branch)
+	fmt.Printf("branch: %s\n", branchDisplay(state))
 	if len(changed) == 0 {
 		fmt.Println("workspace sync: clean")
 	} else {
@@ -195,7 +190,7 @@ func Status() error {
 		status := repoStatus{
 			name:            name,
 			branch:          repoBranch,
-			expectedBranch:  currentBranch(state, repo),
+			expectedBranch:  currentBranch(state, name, repo),
 			workspaceDirty:  changedSet[name],
 			repoDirty:       dirty,
 			upstream:        upstream,
@@ -535,6 +530,65 @@ func fetchBranchForRebase(name, repoPath, branch string) error {
 	return nil
 }
 
+func Checkout(repoName, branch string) error {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return err
+	}
+	changed, err := changedRepos(root, manifest, state)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before checkout", changed)
+	}
+
+	repoNames, err := selectedRepoNames(manifest, repoName)
+	if err != nil {
+		return err
+	}
+	for _, name := range repoNames {
+		repoPath := state.Repos[name].Path
+		dirty, err := gitHasChanges(repoPath)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return fmt.Errorf("repo %q has uncommitted changes; commit or discard them before checkout", name)
+		}
+	}
+
+	for _, name := range repoNames {
+		repoPath := state.Repos[name].Path
+		if err := checkoutRepoRef(name, repoPath, branch); err != nil {
+			return err
+		}
+		head, err := gitHead(repoPath)
+		if err != nil {
+			return err
+		}
+		repoState := state.Repos[name]
+		repoState.Head = head
+		if repoName == "" {
+			repoState.Branch = ""
+		} else {
+			repoState.Branch = branch
+		}
+		state.Repos[name] = repoState
+	}
+
+	if repoName == "" {
+		state.Branch = branch
+	}
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return err
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		return err
+	}
+	return saveState(root, state)
+}
+
 func Branch(branch string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
@@ -570,6 +624,7 @@ func Branch(branch string) error {
 		}
 		repoState := state.Repos[name]
 		repoState.Head = head
+		repoState.Branch = ""
 		state.Repos[name] = repoState
 		fmt.Printf("branched %s -> %s\n", name, branch)
 	}
@@ -595,7 +650,7 @@ func Push(message string) error {
 		repo := manifest.Repos[name]
 		repoPath := state.Repos[name].Path
 		fmt.Printf("\n== %s ==\n", name)
-		if currentBranch(state, repo) == "" {
+		if currentBranch(state, name, repo) == "" {
 			return fmt.Errorf("repo %q has no push branch; run gitplex branch <branch> or set repo ref in manifest", name)
 		}
 		if err := syncWorkspaceToRepo(root, manifest, state, name); err != nil {
@@ -613,7 +668,7 @@ func Push(message string) error {
 				break
 			}
 			if head := publishedHeads[depName]; head != "" {
-				depRef := currentBranch(state, manifest.Repos[depName])
+				depRef := currentBranch(state, depName, manifest.Repos[depName])
 				if depRef == "" {
 					return fmt.Errorf("dependency repo %q has no ref for flake update", depName)
 				}
@@ -651,7 +706,7 @@ func Push(message string) error {
 		} else {
 			fmt.Println("no changes to commit")
 		}
-		if err := runGitAndPrint(repoPath, "push", "-u", "origin", currentBranch(state, repo)); err != nil {
+		if err := runGitAndPrint(repoPath, "push", "-u", "origin", currentBranch(state, name, repo)); err != nil {
 			failedRepos[name] = true
 			pushErrors = append(pushErrors, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -692,11 +747,34 @@ func runCommandAndPrint(dir, command string, args ...string) error {
 	return nil
 }
 
-func currentBranch(state State, repo RepoConfig) string {
+func currentBranch(state State, repoName string, repo RepoConfig) string {
+	if repoState, ok := state.Repos[repoName]; ok && repoState.Branch != "" {
+		return repoState.Branch
+	}
 	if state.Branch != "" {
 		return state.Branch
 	}
 	return repo.Ref
+}
+
+func branchDisplay(state State) string {
+	hasRepoOverride := false
+	for _, repoState := range state.Repos {
+		if repoState.Branch != "" {
+			hasRepoOverride = true
+			break
+		}
+	}
+	if state.Branch != "" {
+		if hasRepoOverride {
+			return state.Branch + " (with repo overrides)"
+		}
+		return state.Branch
+	}
+	if hasRepoOverride {
+		return "(mixed)"
+	}
+	return "(manifest refs)"
 }
 
 func loadProject() (string, Manifest, State, error) {

@@ -12,6 +12,8 @@ gitplex branch feature/my-change
 gitplex status
 gitplex doctor
 gitplex pull
+gitplex checkout release/main
+gitplex checkout credit-api release/main
 gitplex rebase release/main
 gitplex rebase credit-api release/main
 gitplex cherrypick credit-api abc1234
@@ -49,6 +51,8 @@ workspace_files:
 This makes Gitplex generic for Haskell + Nix repos without baking any company- or project-specific flake contents into the tool itself.
 
 `gitplex branch` creates or resets the same branch in every backing repo and records it for later pushes.
+
+`gitplex checkout <branch>` checks out every backing repo to the branch, then refreshes the generated workspace. Use `gitplex checkout <repo> <branch>` to checkout just one repo. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
 
 `gitplex rebase <branch>` rebases every backing repo onto `origin/<branch>`, then refreshes the generated workspace. Use `gitplex rebase <repo> <branch>` to rebase just one repo. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
 
