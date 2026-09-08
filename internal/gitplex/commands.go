@@ -327,6 +327,16 @@ func Pull() error {
 	return saveState(root, state)
 }
 
+func Stash(args []string) error {
+	root, manifest, _, err := loadProject()
+	if err != nil {
+		return err
+	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	gitArgs := append([]string{"stash"}, args...)
+	return runGitAndPrint(workspacePath, gitArgs...)
+}
+
 func Rebase(repoName, branch string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {

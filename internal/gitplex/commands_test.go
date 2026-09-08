@@ -210,6 +210,87 @@ func TestRebaseRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestStashOnlyAffectsWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	repoFile := filepath.Join(root, ".gitplex", "repos", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stash(nil); err != nil {
+		t.Fatalf("stash: %v", err)
+	}
+
+	workspaceContent, err := os.ReadFile(workspaceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workspaceContent) != "main\n" {
+		t.Fatalf("workspace content after stash = %q, want main", workspaceContent)
+	}
+	repoContent, err := os.ReadFile(repoFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoContent) != "main\n" {
+		t.Fatalf("repo content after stash = %q, want main", repoContent)
+	}
+
+	if err := Stash([]string{"pop"}); err != nil {
+		t.Fatalf("stash pop: %v", err)
+	}
+
+	workspaceContent, err = os.ReadFile(workspaceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workspaceContent) != "workspace edit\n" {
+		t.Fatalf("workspace content after pop = %q, want workspace edit", workspaceContent)
+	}
+	repoContent, err = os.ReadFile(repoFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoContent) != "main\n" {
+		t.Fatalf("repo content after pop = %q, want main", repoContent)
+	}
+}
+
+func TestStashPassesThroughArgs(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Stash([]string{"push", "-m", "workspace only"}); err != nil {
+		t.Fatalf("stash push: %v", err)
+	}
+
+	list := gitTest(t, filepath.Join(root, "workspace"), "stash", "list")
+	if !strings.Contains(list, "workspace only") {
+		t.Fatalf("stash list = %q, want custom message", list)
+	}
+}
+
 func TestCheckoutAllReposToBranchAndRefreshesWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()

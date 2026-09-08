@@ -12,6 +12,7 @@ gitplex branch feature/my-change
 gitplex status
 gitplex doctor
 gitplex pull
+gitplex stash
 gitplex checkout release/main
 gitplex checkout credit-api release/main
 gitplex rebase release/main
@@ -59,5 +60,7 @@ This makes Gitplex generic for Haskell + Nix repos without baking any company- o
 `gitplex cherrypick <repo> <commit>` cherry-picks one commit into the named backing repo, records the new repo HEAD, then refreshes the generated workspace. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
 
 `gitplex doctor` runs a quick preflight over the generated workspace and backing repos. It checks that required tools are installed, the manifest dependency graph is valid, the workspace is in sync, and each repo has a readable branch/upstream state before you push.
+
+`gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
 
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.
