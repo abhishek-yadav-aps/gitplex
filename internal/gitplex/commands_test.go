@@ -607,6 +607,125 @@ func TestCherryPickRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestAmendRewritesLastCommitWithWorkspaceChanges(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	oldHead := commitBackingRepoChange(t, root, "app", "previous\n", "previous commit")
+	oldCount := gitTest(t, repoPath, "rev-list", "--count", "HEAD")
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Amend(""); err != nil {
+		t.Fatalf("amend: %v", err)
+	}
+
+	newHead := gitTest(t, repoPath, "rev-parse", "HEAD")
+	if newHead == oldHead {
+		t.Fatalf("HEAD did not change after amend: %s", newHead)
+	}
+	newCount := gitTest(t, repoPath, "rev-list", "--count", "HEAD")
+	if newCount != oldCount {
+		t.Fatalf("commit count = %s, want %s", newCount, oldCount)
+	}
+	message := strings.TrimSpace(gitTest(t, repoPath, "log", "-1", "--pretty=%B"))
+	if message != "previous commit" {
+		t.Fatalf("message = %q, want previous commit", message)
+	}
+	repoContent, err := os.ReadFile(filepath.Join(repoPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoContent) != "workspace edit\n" {
+		t.Fatalf("repo content = %q, want workspace edit", repoContent)
+	}
+	workspaceContent, err := os.ReadFile(workspaceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workspaceContent) != "workspace edit\n" {
+		t.Fatalf("workspace content = %q, want workspace edit", workspaceContent)
+	}
+	state, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Repos["app"].Head != newHead {
+		t.Fatalf("state app head = %q, want %q", state.Repos["app"].Head, newHead)
+	}
+}
+
+func TestAmendAllReposWithMessageOverride(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeTwoRepoManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+	commitBackingRepoChange(t, root, "app", "previous app\n", "previous app commit")
+	commitBackingRepoChange(t, root, "lib", "previous lib\n", "previous lib commit")
+
+	if err := os.WriteFile(filepath.Join(root, "workspace", "app", "README.md"), []byte("workspace app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", "lib", "README.md"), []byte("workspace lib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Amend("replacement commit"); err != nil {
+		t.Fatalf("amend all: %v", err)
+	}
+
+	for repo, want := range map[string]string{"app": "workspace app\n", "lib": "workspace lib\n"} {
+		repoPath := filepath.Join(root, ".gitplex", "repos", repo)
+		message := strings.TrimSpace(gitTest(t, repoPath, "log", "-1", "--pretty=%B"))
+		if message != "replacement commit" {
+			t.Fatalf("%s message = %q, want replacement commit", repo, message)
+		}
+		content, err := os.ReadFile(filepath.Join(repoPath, "README.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != want {
+			t.Fatalf("%s repo content = %q, want %q", repo, content, want)
+		}
+	}
+}
+
+func TestAmendRejectsRepoWithNoParentCommit(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	err := Amend("")
+	if err == nil {
+		t.Fatal("amend succeeded with no parent commit")
+	}
+	want := "repo \"app\" cannot amend because HEAD has no parent commit"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
 func seedRemoteRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -647,6 +766,45 @@ func addRemoteCommit(t *testing.T, repo, readmeContent string) string {
 	}
 	gitTest(t, repo, "commit", "-am", "hotfix")
 	return gitTest(t, repo, "rev-parse", "HEAD")
+}
+
+func commitBackingRepoChange(t *testing.T, root, repo, readmeContent, message string) string {
+	t.Helper()
+	repoPath := filepath.Join(root, ".gitplex", "repos", repo)
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte(readmeContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "add", "README.md")
+	gitTest(t, repoPath, "commit", "-m", message)
+	head := gitTest(t, repoPath, "rev-parse", "HEAD")
+
+	manifest, state := loadProjectForTest(t, root)
+	repoState := state.Repos[repo]
+	repoState.Head = head
+	state.Repos[repo] = repoState
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(root, state); err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
+func loadProjectForTest(t *testing.T, root string) (Manifest, State) {
+	t.Helper()
+	state, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := loadManifest(state.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest, state
 }
 
 func writeManifest(t *testing.T, path, remote, ref string) {

@@ -49,6 +49,12 @@ func Run(args []string) error {
 			return err
 		}
 		return Branch(branch)
+	case "amend":
+		message, err := parseAmendArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return Amend(message)
 	case "push":
 		message, err := parsePushArgs(args[1:])
 		if err != nil {
@@ -104,7 +110,22 @@ func parseCherryPickArgs(args []string) (string, string, error) {
 }
 
 func parsePushArgs(args []string) (string, error) {
-	message := "gitplex sync"
+	message, err := parseOptionalMessageArgs("push", args)
+	if err != nil {
+		return "", err
+	}
+	if message == "" {
+		message = "gitplex sync"
+	}
+	return message, nil
+}
+
+func parseAmendArgs(args []string) (string, error) {
+	return parseOptionalMessageArgs("amend", args)
+}
+
+func parseOptionalMessageArgs(command string, args []string) (string, error) {
+	message := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--message", "-message", "-m":
@@ -114,13 +135,13 @@ func parsePushArgs(args []string) (string, error) {
 			}
 			message = args[i]
 		default:
-			return "", fmt.Errorf("usage: gitplex push --message <message>")
+			return "", fmt.Errorf("usage: gitplex %s --message <message>", command)
 		}
 	}
 	return message, nil
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|rebase|checkout|cherrypick|branch|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|rebase|checkout|cherrypick|branch|amend|push>")
 	return fmt.Errorf("unknown or missing command")
 }

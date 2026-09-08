@@ -643,6 +643,118 @@ func Branch(branch string) error {
 	return saveState(root, state)
 }
 
+func Amend(message string) error {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return err
+	}
+	order, err := topoOrder(manifest)
+	if err != nil {
+		return err
+	}
+	for _, name := range order {
+		repo := manifest.Repos[name]
+		repoPath := state.Repos[name].Path
+		if currentBranch(state, name, repo) == "" {
+			return fmt.Errorf("repo %q has no amend branch; run gitplex branch <branch> or set repo ref in manifest", name)
+		}
+		if err := ensureAmendableHead(name, repoPath); err != nil {
+			return err
+		}
+	}
+
+	publishedHeads := map[string]string{}
+	for _, name := range order {
+		repo := manifest.Repos[name]
+		repoPath := state.Repos[name].Path
+		fmt.Printf("\n== %s ==\n", name)
+
+		commitMessage := message
+		if commitMessage == "" {
+			commitMessage, err = git(repoPath, "log", "-1", "--pretty=%B")
+			if err != nil {
+				return err
+			}
+		}
+		if err := syncWorkspaceToRepo(root, manifest, state, name); err != nil {
+			return err
+		}
+		var updatedFlakeInputs []string
+		for depName, depConfig := range repo.Dependencies {
+			if head := publishedHeads[depName]; head != "" {
+				depRef := currentBranch(state, depName, manifest.Repos[depName])
+				if depRef == "" {
+					return fmt.Errorf("dependency repo %q has no ref for flake update", depName)
+				}
+				if err := updateFlakeInput(repoPath, depConfig.FlakeInput, depRef, head); err != nil {
+					return err
+				}
+				updatedFlakeInputs = append(updatedFlakeInputs, depConfig.FlakeInput)
+			}
+		}
+		for _, flakeInput := range updatedFlakeInputs {
+			if err := runCommandAndPrint(repoPath, "nix", "flake", "lock", "--update-input", flakeInput); err != nil {
+				return err
+			}
+		}
+
+		if err := runGitAndPrint(repoPath, "reset", "--mixed", "HEAD~1"); err != nil {
+			return err
+		}
+		if _, err := git(repoPath, "add", "-A"); err != nil {
+			return err
+		}
+		if err := gitCommitWithMessage(repoPath, commitMessage); err != nil {
+			return err
+		}
+		head, err := gitHead(repoPath)
+		if err != nil {
+			return err
+		}
+		publishedHeads[name] = head
+		repoState := state.Repos[name]
+		repoState.Head = head
+		state.Repos[name] = repoState
+	}
+
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return err
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		return err
+	}
+	return saveState(root, state)
+}
+
+func ensureAmendableHead(name, repoPath string) error {
+	if _, err := git(repoPath, "rev-parse", "--verify", "HEAD~1"); err != nil {
+		return fmt.Errorf("repo %q cannot amend because HEAD has no parent commit", name)
+	}
+	return nil
+}
+
+func gitCommitWithMessage(repoPath, message string) error {
+	file, err := os.CreateTemp("", "gitplex-commit-message-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.WriteString(message); err != nil {
+		file.Close()
+		return err
+	}
+	if !strings.HasSuffix(message, "\n") {
+		if _, err := file.WriteString("\n"); err != nil {
+			file.Close()
+			return err
+		}
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return runGitAndPrint(repoPath, "commit", "--allow-empty", "-F", file.Name())
+}
+
 func Push(message string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
