@@ -4,6 +4,47 @@
 
 The backing clones live in `.gitplex/repos`. The editable combined view lives in `workspace`.
 
+## Install
+
+Install the latest macOS or Linux release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh
+```
+
+Install with Homebrew:
+
+```sh
+brew install --cask abhishek-yadav-aps/tap/gitplex
+```
+
+Install a specific version:
+
+```sh
+GITPLEX_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh
+```
+
+The installer puts `gitplex` in `/usr/local/bin` by default. To choose another directory:
+
+```sh
+GITPLEX_INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh
+```
+
+You can also download the macOS or Linux archive directly from GitHub Releases and put the `gitplex` binary somewhere on your `PATH`.
+
+## Release
+
+Releases are built by GitHub Actions when a version tag is pushed:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow publishes `darwin` and `linux` binaries for `amd64` and `arm64`, plus checksums.
+
+To publish the Homebrew tap automatically, create a public GitHub repository named `homebrew-tap`, then add a repository secret named `HOMEBREW_TAP_GITHUB_TOKEN` to this `gitplex` repository. The token needs write access to `abhishek-yadav-aps/homebrew-tap`.
+
 ## Commands
 
 ```sh

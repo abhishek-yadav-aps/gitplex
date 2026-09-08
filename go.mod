@@ -1,4 +1,4 @@
-module github.com/juspay/gitplex
+module github.com/abhishek-yadav-aps/gitplex
 
 go 1.22
 

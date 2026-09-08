@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/juspay/gitplex/internal/gitplex"
+	"github.com/abhishek-yadav-aps/gitplex/internal/gitplex"
 )
 
 func main() {
