@@ -25,6 +25,12 @@ func Run(args []string) error {
 		return Pull()
 	case "stash":
 		return Stash(args[1:])
+	case "repo-mode":
+		repo, err := parseRepoModeArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return RepoMode(repo)
 	case "rebase":
 		repo, branch, err := parseRebaseArgs(args[1:])
 		if err != nil {
@@ -76,6 +82,13 @@ func parseInitArgs(args []string) (string, error) {
 func parseBranchArgs(args []string) (string, error) {
 	if len(args) != 1 {
 		return "", fmt.Errorf("usage: gitplex branch <branch>")
+	}
+	return args[0], nil
+}
+
+func parseRepoModeArgs(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: gitplex repo-mode <repo>")
 	}
 	return args[0], nil
 }
@@ -142,6 +155,6 @@ func parseOptionalMessageArgs(command string, args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|rebase|checkout|cherrypick|branch|amend|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|repo-mode|rebase|checkout|cherrypick|branch|amend|push>")
 	return fmt.Errorf("unknown or missing command")
 }

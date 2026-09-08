@@ -726,6 +726,68 @@ func TestAmendRejectsRepoWithNoParentCommit(t *testing.T) {
 	}
 }
 
+func TestRepoModePathReturnsBackingRepoPath(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeTwoRepoManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	path, err := RepoModePath("app")
+	if err != nil {
+		t.Fatalf("repo-mode app: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cwd, ".gitplex", "repos", "app")
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+func TestRepoModePathRejectsUnknownRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	_, err := RepoModePath("missing")
+	if err == nil {
+		t.Fatal("repo-mode succeeded with unknown repo")
+	}
+	want := "repo \"missing\" does not exist in manifest"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestParseRepoModeArgs(t *testing.T) {
+	repo, err := parseRepoModeArgs([]string{"app"})
+	if err != nil {
+		t.Fatalf("parse repo-mode: %v", err)
+	}
+	if repo != "app" {
+		t.Fatalf("repo = %q, want app", repo)
+	}
+
+	for _, args := range [][]string{nil, []string{"app", "extra"}} {
+		if _, err := parseRepoModeArgs(args); err == nil {
+			t.Fatalf("parseRepoModeArgs(%v) succeeded, want usage error", args)
+		}
+	}
+}
+
 func seedRemoteRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

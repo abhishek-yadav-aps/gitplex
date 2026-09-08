@@ -493,6 +493,35 @@ func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
 	return repoNames, nil
 }
 
+func RepoMode(repoName string) error {
+	path, err := RepoModePath(repoName)
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+func RepoModePath(repoName string) (string, error) {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return "", err
+	}
+	repoNames, err := selectedRepoNames(manifest, repoName)
+	if err != nil {
+		return "", err
+	}
+	name := repoNames[0]
+	repoState, ok := state.Repos[name]
+	if !ok {
+		return "", fmt.Errorf("repo %q is missing from state", name)
+	}
+	if filepath.IsAbs(repoState.Path) {
+		return repoState.Path, nil
+	}
+	return filepath.Join(root, repoState.Path), nil
+}
+
 func ensureCommitAvailableForCherryPick(name, repoPath, commit string) error {
 	if _, err := git(repoPath, "rev-parse", "--verify", commit+"^{commit}"); err == nil {
 		return nil
