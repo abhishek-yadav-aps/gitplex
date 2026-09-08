@@ -772,6 +772,185 @@ func TestRepoModePathRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestWorkspaceModeRebuildsWorkspaceWithoutChangingBackingRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	repoHead := gitTest(t, repoPath, "rev-parse", "HEAD")
+	repoContent, err := os.ReadFile(filepath.Join(repoPath, "src", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", "local-only.txt"), []byte("remove me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := WorkspaceModePath(true)
+	if err != nil {
+		t.Fatalf("workspace-mode --force: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(cwd, "workspace")
+	if path != wantPath {
+		t.Fatalf("path = %q, want %q", path, wantPath)
+	}
+	rebuiltContent, err := os.ReadFile(workspaceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rebuiltContent) != "main src\n" {
+		t.Fatalf("workspace content = %q, want main src", rebuiltContent)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workspace", "local-only.txt")); !os.IsNotExist(err) {
+		t.Fatalf("local-only file still exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workspace", ".git")); err != nil {
+		t.Fatalf("workspace .git missing: %v", err)
+	}
+	if gotHead := gitTest(t, repoPath, "rev-parse", "HEAD"); gotHead != repoHead {
+		t.Fatalf("repo HEAD = %q, want %q", gotHead, repoHead)
+	}
+	gotRepoContent, err := os.ReadFile(filepath.Join(repoPath, "src", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotRepoContent) != string(repoContent) {
+		t.Fatalf("repo content = %q, want %q", gotRepoContent, repoContent)
+	}
+	if status := gitTest(t, repoPath, "status", "--porcelain"); status != "" {
+		t.Fatalf("repo status = %q, want clean", status)
+	}
+}
+
+func TestWorkspaceModeRefusesDirtyWorkspaceWithoutForce(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := WorkspaceModePath(false)
+	if err == nil {
+		t.Fatal("workspace-mode succeeded with dirty workspace")
+	}
+	want := "workspace has local changes in [app]; run gitplex push, gitplex stash, or rerun workspace-mode --force to discard them"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	content, readErr := os.ReadFile(workspaceFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "workspace edit\n" {
+		t.Fatalf("workspace content = %q, want dirty edit preserved", content)
+	}
+}
+
+func TestWorkspaceModeRefusesDirtyBackingRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	repoFile := filepath.Join(root, ".gitplex", "repos", "app", "src", "LOCAL.md")
+	if err := os.WriteFile(repoFile, []byte("repo edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := WorkspaceModePath(true)
+	if err == nil {
+		t.Fatal("workspace-mode succeeded with dirty repo")
+	}
+	want := "repo \"app\" has uncommitted changes; commit or discard them before workspace-mode"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestWorkspaceModePrintsOnlyWorkspacePath(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return WorkspaceMode(false)
+	})
+	if err != nil {
+		t.Fatalf("workspace-mode: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cwd, "workspace") + "\n"
+	if out != want {
+		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+}
+
+func TestParseWorkspaceModeArgs(t *testing.T) {
+	force, err := parseWorkspaceModeArgs(nil)
+	if err != nil {
+		t.Fatalf("parse workspace-mode: %v", err)
+	}
+	if force {
+		t.Fatal("force = true, want false")
+	}
+
+	force, err = parseWorkspaceModeArgs([]string{"--force"})
+	if err != nil {
+		t.Fatalf("parse workspace-mode --force: %v", err)
+	}
+	if !force {
+		t.Fatal("force = false, want true")
+	}
+
+	force, err = parseWorkspaceModeArgs([]string{"-f"})
+	if err != nil {
+		t.Fatalf("parse workspace-mode -f: %v", err)
+	}
+	if !force {
+		t.Fatal("force = false, want true")
+	}
+
+	if _, err := parseWorkspaceModeArgs([]string{"--bad"}); err == nil {
+		t.Fatal("parseWorkspaceModeArgs succeeded, want usage error")
+	}
+}
+
 func TestParseRepoModeArgs(t *testing.T) {
 	repo, err := parseRepoModeArgs([]string{"app"})
 	if err != nil {
@@ -786,6 +965,28 @@ func TestParseRepoModeArgs(t *testing.T) {
 			t.Fatalf("parseRepoModeArgs(%v) succeeded, want usage error", args)
 		}
 	}
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	originalStdout := os.Stdout
+	file, err := os.CreateTemp("", "gitplex-test-stdout-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+
+	os.Stdout = file
+	runErr := fn()
+	os.Stdout = originalStdout
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), runErr
 }
 
 func seedRemoteRepo(t *testing.T) string {

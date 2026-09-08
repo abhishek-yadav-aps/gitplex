@@ -13,6 +13,8 @@ gitplex status
 gitplex doctor
 gitplex pull
 gitplex stash
+cd "$(gitplex workspace-mode)"
+cd "$(gitplex workspace-mode --force)"
 cd "$(gitplex repo-mode credit-api)"
 gitplex checkout release/main
 gitplex checkout credit-api release/main
@@ -67,6 +69,8 @@ This makes Gitplex generic for Haskell + Nix repos without baking any company- o
 `gitplex doctor` runs a quick preflight over the generated workspace and backing repos. It checks that required tools are installed, the manifest dependency graph is valid, the workspace is in sync, and each repo has a readable branch/upstream state before you push.
 
 `gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
+
+`gitplex workspace-mode` rebuilds the generated workspace from scratch from the existing backing clones, initializes a fresh workspace Git baseline, and prints the workspace path. Use `cd "$(gitplex workspace-mode)"` to move the current shell into the generated workspace. The command refuses to discard generated workspace changes unless you pass `--force`, and it refuses to run if any backing clone under `.gitplex/repos` has uncommitted changes.
 
 `gitplex repo-mode <repo>` prints the backing clone path for a repo under `.gitplex/repos`. Use `cd "$(gitplex repo-mode <repo>)"` to move the current shell into that backing repo for manual changes.
 

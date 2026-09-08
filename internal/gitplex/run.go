@@ -31,6 +31,12 @@ func Run(args []string) error {
 			return err
 		}
 		return RepoMode(repo)
+	case "workspace-mode":
+		force, err := parseWorkspaceModeArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return WorkspaceMode(force)
 	case "rebase":
 		repo, branch, err := parseRebaseArgs(args[1:])
 		if err != nil {
@@ -91,6 +97,19 @@ func parseRepoModeArgs(args []string) (string, error) {
 		return "", fmt.Errorf("usage: gitplex repo-mode <repo>")
 	}
 	return args[0], nil
+}
+
+func parseWorkspaceModeArgs(args []string) (bool, error) {
+	force := false
+	for _, arg := range args {
+		switch arg {
+		case "--force", "-f":
+			force = true
+		default:
+			return false, fmt.Errorf("usage: gitplex workspace-mode [--force]")
+		}
+	}
+	return force, nil
 }
 
 func parseRebaseArgs(args []string) (string, string, error) {
@@ -155,6 +174,6 @@ func parseOptionalMessageArgs(command string, args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|repo-mode|rebase|checkout|cherrypick|branch|amend|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|repo-mode|workspace-mode|rebase|checkout|cherrypick|branch|amend|push>")
 	return fmt.Errorf("unknown or missing command")
 }

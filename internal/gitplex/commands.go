@@ -522,6 +522,82 @@ func RepoModePath(repoName string) (string, error) {
 	return filepath.Join(root, repoState.Path), nil
 }
 
+func WorkspaceMode(force bool) error {
+	originalStdout := os.Stdout
+	sink, err := os.CreateTemp("", "gitplex-workspace-mode-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(sink.Name())
+
+	os.Stdout = sink
+	path, err := WorkspaceModePath(force)
+	os.Stdout = originalStdout
+	if closeErr := sink.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+func WorkspaceModePath(force bool) (string, error) {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return "", err
+	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	if err := ensureBackingReposClean(manifest, state, "workspace-mode"); err != nil {
+		return "", err
+	}
+	if !force {
+		if _, statErr := os.Stat(workspacePath); statErr == nil {
+			changed, err := changedRepos(root, manifest, state)
+			if err != nil {
+				return "", err
+			}
+			if len(changed) > 0 {
+				return "", fmt.Errorf("workspace has local changes in %v; run gitplex push, gitplex stash, or rerun workspace-mode --force to discard them", changed)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+	}
+	if err := removeGeneratedPath(workspacePath); err != nil {
+		return "", err
+	}
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return "", err
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		return "", err
+	}
+	if err := saveState(root, state); err != nil {
+		return "", err
+	}
+	return workspacePath, nil
+}
+
+func ensureBackingReposClean(manifest Manifest, state State, command string) error {
+	for name := range manifest.Repos {
+		repoState, ok := state.Repos[name]
+		if !ok {
+			return fmt.Errorf("repo %q is missing from state", name)
+		}
+		repoPath := repoState.Path
+		dirty, err := gitHasChanges(repoPath)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return fmt.Errorf("repo %q has uncommitted changes; commit or discard them before %s", name, command)
+		}
+	}
+	return nil
+}
+
 func ensureCommitAvailableForCherryPick(name, repoPath, commit string) error {
 	if _, err := git(repoPath, "rev-parse", "--verify", commit+"^{commit}"); err == nil {
 		return nil
