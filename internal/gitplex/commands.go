@@ -3,6 +3,7 @@ package gitplex
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -386,6 +387,92 @@ func Rebase(repoName, branch string) error {
 	return saveState(root, state)
 }
 
+func CherryPick(repoName, commit string) error {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return err
+	}
+	repoNames, err := selectedRepoNames(manifest, repoName)
+	if err != nil {
+		return err
+	}
+	name := repoNames[0]
+	repoPath := state.Repos[name].Path
+
+	changed, err := changedRepos(root, manifest, state)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		workspaceDirty, err := gitHasChanges(filepath.Join(root, manifest.Workspace))
+		if err != nil {
+			return err
+		}
+		if workspaceDirty {
+			return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before cherrypick", changed)
+		}
+		fmt.Println("workspace is out of sync; refreshing from backing repos")
+		if err := refreshWorkspace(root, manifest, state); err != nil {
+			return err
+		}
+		if err := generateWorkspaceProject(root, manifest, state); err != nil {
+			return err
+		}
+	}
+
+	dirty, err := gitHasChanges(repoPath)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("repo %q has uncommitted changes; commit or discard them before cherrypick", name)
+	}
+
+	if err := ensureCommitAvailableForCherryPick(name, repoPath, commit); err != nil {
+		return err
+	}
+	alreadyApplied, err := gitCommitAlreadyApplied(repoPath, commit)
+	if err != nil {
+		return err
+	}
+	if alreadyApplied {
+		fmt.Printf("commit %s is already applied in %s; refreshing workspace\n", commit, name)
+		head, err := gitHead(repoPath)
+		if err != nil {
+			return err
+		}
+		repoState := state.Repos[name]
+		repoState.Head = head
+		state.Repos[name] = repoState
+		if err := refreshWorkspace(root, manifest, state); err != nil {
+			return err
+		}
+		if err := generateWorkspaceProject(root, manifest, state); err != nil {
+			return err
+		}
+		return saveState(root, state)
+	}
+	fmt.Printf("cherry-picking %s into %s\n", commit, name)
+	if err := runGitAndPrint(repoPath, "cherry-pick", commit); err != nil {
+		return err
+	}
+	head, err := gitHead(repoPath)
+	if err != nil {
+		return err
+	}
+	repoState := state.Repos[name]
+	repoState.Head = head
+	state.Repos[name] = repoState
+
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return err
+	}
+	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		return err
+	}
+	return saveState(root, state)
+}
+
 func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
 	if repoName != "" {
 		if _, ok := manifest.Repos[repoName]; !ok {
@@ -399,6 +486,45 @@ func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
 	}
 	sort.Strings(repoNames)
 	return repoNames, nil
+}
+
+func ensureCommitAvailableForCherryPick(name, repoPath, commit string) error {
+	if _, err := git(repoPath, "rev-parse", "--verify", commit+"^{commit}"); err == nil {
+		return nil
+	}
+	if _, err := git(repoPath, "fetch", "origin", commit); err != nil {
+		return fmt.Errorf("fetch commit %q for repo %q: %w", commit, name, err)
+	}
+	if _, err := git(repoPath, "rev-parse", "--verify", commit+"^{commit}"); err != nil {
+		return fmt.Errorf("commit %q is not available for repo %q: %w", commit, name, err)
+	}
+	return nil
+}
+
+func gitCommitIsAncestor(repoPath, ancestor, descendant string) (bool, error) {
+	_, _, err := gitOutput(repoPath, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", ancestor, descendant, err)
+}
+
+func gitCommitAlreadyApplied(repoPath, commit string) (bool, error) {
+	ancestor, err := gitCommitIsAncestor(repoPath, commit, "HEAD")
+	if err != nil {
+		return false, err
+	}
+	if ancestor {
+		return true, nil
+	}
+	out, err := git(repoPath, "cherry", "HEAD", commit)
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(out, "-"), nil
 }
 
 func fetchBranchForRebase(name, repoPath, branch string) error {

@@ -730,6 +730,9 @@ func prepareWorkspaceGit(workspacePath string) error {
 	if _, err := git(workspacePath, "config", "user.email", "gitplex@example.invalid"); err != nil {
 		return err
 	}
+	if _, err := git(workspacePath, "rev-parse", "--verify", "HEAD"); err == nil {
+		return nil
+	}
 	if _, err := git(workspacePath, "add", "-A"); err != nil {
 		return err
 	}

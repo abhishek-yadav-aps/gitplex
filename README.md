@@ -14,6 +14,7 @@ gitplex doctor
 gitplex pull
 gitplex rebase release/main
 gitplex rebase credit-api release/main
+gitplex cherrypick credit-api abc1234
 gitplex push --message "credit repo changes"
 ```
 
@@ -50,6 +51,8 @@ This makes Gitplex generic for Haskell + Nix repos without baking any company- o
 `gitplex branch` creates or resets the same branch in every backing repo and records it for later pushes.
 
 `gitplex rebase <branch>` rebases every backing repo onto `origin/<branch>`, then refreshes the generated workspace. Use `gitplex rebase <repo> <branch>` to rebase just one repo. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
+
+`gitplex cherrypick <repo> <commit>` cherry-picks one commit into the named backing repo, records the new repo HEAD, then refreshes the generated workspace. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
 
 `gitplex doctor` runs a quick preflight over the generated workspace and backing repos. It checks that required tools are installed, the manifest dependency graph is valid, the workspace is in sync, and each repo has a readable branch/upstream state before you push.
 

@@ -44,7 +44,7 @@ func TestInitRefusesDirtyWorkspace(t *testing.T) {
 	chdir(t, root)
 
 	manifestPath := filepath.Join(root, "manifest.yaml")
-	writeManifest(t, manifestPath, remote, "main")
+	writeSrcManifest(t, manifestPath, remote, "main")
 	if err := Init(manifestPath); err != nil {
 		t.Fatalf("init main: %v", err)
 	}
@@ -210,6 +210,143 @@ func TestRebaseRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestCherryPickRepoCommitAndRefreshesWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeTwoRepoManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	commit := addRemoteCommit(t, remote, "hotfix\n")
+	if err := CherryPick("app", commit); err != nil {
+		t.Fatalf("cherrypick app: %v", err)
+	}
+
+	appContent, err := os.ReadFile(filepath.Join(root, "workspace", "app", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(appContent) != "hotfix\n" {
+		t.Fatalf("app workspace content = %q, want hotfix", appContent)
+	}
+	libContent, err := os.ReadFile(filepath.Join(root, "workspace", "lib", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(libContent) != "main\n" {
+		t.Fatalf("lib workspace content = %q, want main", libContent)
+	}
+	head := gitTest(t, filepath.Join(root, ".gitplex", "repos", "app"), "rev-parse", "HEAD")
+	state, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Repos["app"].Head != head {
+		t.Fatalf("state app head = %q, want %q", state.Repos["app"].Head, head)
+	}
+	workspaceStatus := gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
+	if !strings.Contains(workspaceStatus, " M app/README.md") {
+		t.Fatalf("workspace git status = %q, want app/README.md modified", workspaceStatus)
+	}
+
+	gitTest(t, filepath.Join(root, "workspace"), "checkout", "--", ".")
+	workspaceStatus = gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
+	if workspaceStatus != "" {
+		t.Fatalf("workspace git status after discard = %q, want clean", workspaceStatus)
+	}
+	if err := CherryPick("app", commit); err != nil {
+		t.Fatalf("repeat cherrypick app after workspace discard: %v", err)
+	}
+	workspaceStatus = gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
+	if !strings.Contains(workspaceStatus, " M app/README.md") {
+		t.Fatalf("workspace git status after repeat = %q, want app/README.md modified", workspaceStatus)
+	}
+}
+
+func TestCherryPickRefusesDirtyWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	commit := addRemoteCommit(t, remote, "hotfix\n")
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := CherryPick("app", commit)
+	if err == nil {
+		t.Fatal("cherrypick succeeded with dirty workspace")
+	}
+	want := "workspace has local changes in [app]; run gitplex push or discard them before cherrypick"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	content, readErr := os.ReadFile(workspaceFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "workspace edit\n" {
+		t.Fatalf("workspace content = %q, want dirty edit preserved", content)
+	}
+}
+
+func TestCherryPickRefusesDirtyRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	commit := addRemoteCommit(t, remote, "hotfix\n")
+	repoFile := filepath.Join(root, ".gitplex", "repos", "app", "LOCAL.md")
+	if err := os.WriteFile(repoFile, []byte("repo edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := CherryPick("app", commit)
+	if err == nil {
+		t.Fatal("cherrypick succeeded with dirty repo")
+	}
+	want := "repo \"app\" has uncommitted changes; commit or discard them before cherrypick"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestCherryPickRejectsUnknownRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	err := CherryPick("missing", "HEAD")
+	if err == nil {
+		t.Fatal("cherrypick succeeded with unknown repo")
+	}
+	want := "repo \"missing\" does not exist in manifest"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
 func seedRemoteRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -238,6 +375,18 @@ func seedRemoteRepo(t *testing.T) string {
 	gitTest(t, repo, "commit", "-am", "release")
 	gitTest(t, repo, "checkout", "main")
 	return repo
+}
+
+func addRemoteCommit(t *testing.T, repo, readmeContent string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(readmeContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "README.md"), []byte(strings.TrimSpace(readmeContent)+" src\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "commit", "-am", "hotfix")
+	return gitTest(t, repo, "rev-parse", "HEAD")
 }
 
 func writeManifest(t *testing.T, path, remote, ref string) {

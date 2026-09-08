@@ -29,6 +29,12 @@ func Run(args []string) error {
 			return err
 		}
 		return Rebase(repo, branch)
+	case "cherrypick", "cherry-pick":
+		repo, commit, err := parseCherryPickArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return CherryPick(repo, commit)
 	case "branch":
 		branch, err := parseBranchArgs(args[1:])
 		if err != nil {
@@ -71,6 +77,13 @@ func parseRebaseArgs(args []string) (string, string, error) {
 	}
 }
 
+func parseCherryPickArgs(args []string) (string, string, error) {
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("usage: gitplex cherrypick <repo> <commit>")
+	}
+	return args[0], args[1], nil
+}
+
 func parsePushArgs(args []string) (string, error) {
 	message := "gitplex sync"
 	for i := 0; i < len(args); i++ {
@@ -89,6 +102,6 @@ func parsePushArgs(args []string) (string, error) {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|rebase|branch|push>")
+	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|rebase|cherrypick|branch|push>")
 	return fmt.Errorf("unknown or missing command")
 }
