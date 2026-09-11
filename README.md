@@ -54,9 +54,12 @@ gitplex status
 gitplex doctor
 gitplex pull
 gitplex stash
-cd "$(gitplex workspace-mode)"
-cd "$(gitplex workspace-mode --force)"
-cd "$(gitplex repo-mode credit-api)"
+gitplex build
+gitplex true-build
+eval "$(gitplex shell-init)"
+gitplex workspace-mode
+gitplex workspace-mode --force
+gitplex repo-mode credit-api
 gitplex checkout release/main
 gitplex checkout credit-api release/main
 gitplex rebase release/main
@@ -96,6 +99,7 @@ workspace_files:
 ```
 
 This makes Gitplex generic for Haskell + Nix repos without baking any company- or project-specific flake contents into the tool itself.
+When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also copies that repo's root `.envrc` into the generated workspace if it exists.
 
 `gitplex branch` creates or resets the same branch in every backing repo and records it for later pushes.
 
@@ -111,8 +115,14 @@ This makes Gitplex generic for Haskell + Nix repos without baking any company- o
 
 `gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
 
-`gitplex workspace-mode` rebuilds the generated workspace from scratch from the existing backing clones, initializes a fresh workspace Git baseline, and prints the workspace path. Use `cd "$(gitplex workspace-mode)"` to move the current shell into the generated workspace. The command refuses to discard generated workspace changes unless you pass `--force`, and it refuses to run if any backing clone under `.gitplex/repos` has uncommitted changes.
+`gitplex build` runs `nix build github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders ''` inside the generated workspace.
 
-`gitplex repo-mode <repo>` prints the backing clone path for a repo under `.gitplex/repos`. Use `cd "$(gitplex repo-mode <repo>)"` to move the current shell into that backing repo for manual changes.
+`gitplex true-build` runs `nix build github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders '' --option substitute false` inside the generated workspace.
+
+`gitplex shell-init` prints a zsh/bash-compatible shell function. Add `eval "$(gitplex shell-init)"` to your shell session or shell startup file to make `gitplex repo-mode <repo>` and `gitplex workspace-mode` change your current terminal directory directly. After installing the function, call the binary directly, for example `command gitplex repo-mode <repo>` when `gitplex` is on `PATH`, if you need the raw backing clone path for scripts.
+
+`gitplex workspace-mode` rebuilds the generated workspace from scratch from the existing backing clones, initializes a fresh workspace Git baseline, and prints the workspace path. Use `cd "$(gitplex workspace-mode)"`, or install the shell function from `gitplex shell-init`, to move the current shell into the generated workspace. The command refuses to discard generated workspace changes unless you pass `--force`, and it refuses to run if any backing clone under `.gitplex/repos` has uncommitted changes.
+
+`gitplex repo-mode <repo>` prints the backing clone path for a repo under `.gitplex/repos`. Use `cd "$(gitplex repo-mode <repo>)"`, or install the shell function from `gitplex shell-init`, to move the current shell into that backing repo for manual changes.
 
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.

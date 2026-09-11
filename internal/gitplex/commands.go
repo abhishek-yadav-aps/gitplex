@@ -337,6 +337,41 @@ func Stash(args []string) error {
 	return runGitAndPrint(workspacePath, gitArgs...)
 }
 
+func Build() error {
+	return runWorkspaceNixBuild(false)
+}
+
+func TrueBuild() error {
+	return runWorkspaceNixBuild(true)
+}
+
+func runWorkspaceNixBuild(disableSubstitutes bool) error {
+	root, manifest, _, err := loadProject()
+	if err != nil {
+		return err
+	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	args := []string{
+		"build",
+		"github:srid/devour-flake#default",
+		"-L",
+		"--print-out-paths",
+		"--no-write-lock-file",
+		"--override-input",
+		"flake",
+		".",
+		"--out-link",
+		"./result",
+		"--option",
+		"builders",
+		"",
+	}
+	if disableSubstitutes {
+		args = append(args, "--option", "substitute", "false")
+	}
+	return runCommandAndPrint(workspacePath, "nix", args...)
+}
+
 func Rebase(repoName, branch string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
@@ -420,7 +455,7 @@ func CherryPick(repoName, commit string) error {
 		if err := refreshWorkspace(root, manifest, state); err != nil {
 			return err
 		}
-		if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		if err := generateWorkspaceProjectWithBaseline(root, manifest, state, false); err != nil {
 			return err
 		}
 	}
@@ -452,7 +487,7 @@ func CherryPick(repoName, commit string) error {
 		if err := refreshWorkspace(root, manifest, state); err != nil {
 			return err
 		}
-		if err := generateWorkspaceProject(root, manifest, state); err != nil {
+		if err := generateWorkspaceProjectWithBaseline(root, manifest, state, false); err != nil {
 			return err
 		}
 		return saveState(root, state)
@@ -472,7 +507,7 @@ func CherryPick(repoName, commit string) error {
 	if err := refreshWorkspace(root, manifest, state); err != nil {
 		return err
 	}
-	if err := generateWorkspaceProject(root, manifest, state); err != nil {
+	if err := generateWorkspaceProjectWithBaseline(root, manifest, state, false); err != nil {
 		return err
 	}
 	return saveState(root, state)
@@ -491,6 +526,39 @@ func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
 	}
 	sort.Strings(repoNames)
 	return repoNames, nil
+}
+
+func ShellInit() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	quotedExecutable := shellQuote(executable)
+	fmt.Printf(`gitplex() {
+  case "$1" in
+    repo-mode)
+      if [ "$#" -eq 2 ]; then
+        gitplex_path="$(command %s "$@")" || return
+        cd "$gitplex_path"
+        return
+      fi
+      ;;
+    workspace-mode)
+      if [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && { [ "$2" = "--force" ] || [ "$2" = "-f" ]; }; }; then
+        gitplex_path="$(command %s "$@")" || return
+        cd "$gitplex_path"
+        return
+      fi
+      ;;
+  esac
+  command %s "$@"
+}
+`, quotedExecutable, quotedExecutable, quotedExecutable)
+	return nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func RepoMode(repoName string) error {

@@ -2,12 +2,14 @@ package gitplex
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
 func Run(args []string) error {
 	if len(args) == 0 {
-		return usage()
+		printCommandHelp(os.Stdout)
+		return nil
 	}
 
 	switch args[0] {
@@ -25,6 +27,21 @@ func Run(args []string) error {
 		return Pull()
 	case "stash":
 		return Stash(args[1:])
+	case "build":
+		if err := parseBuildArgs(args[1:]); err != nil {
+			return err
+		}
+		return Build()
+	case "true-build":
+		if err := parseTrueBuildArgs(args[1:]); err != nil {
+			return err
+		}
+		return TrueBuild()
+	case "shell-init":
+		if err := parseShellInitArgs(args[1:]); err != nil {
+			return err
+		}
+		return ShellInit()
 	case "repo-mode":
 		repo, err := parseRepoModeArgs(args[1:])
 		if err != nil {
@@ -74,7 +91,7 @@ func Run(args []string) error {
 		}
 		return Push(message)
 	default:
-		return usage()
+		return usage(args[0])
 	}
 }
 
@@ -90,6 +107,27 @@ func parseBranchArgs(args []string) (string, error) {
 		return "", fmt.Errorf("usage: gitplex branch <branch>")
 	}
 	return args[0], nil
+}
+
+func parseBuildArgs(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: gitplex build")
+	}
+	return nil
+}
+
+func parseTrueBuildArgs(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: gitplex true-build")
+	}
+	return nil
+}
+
+func parseShellInitArgs(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: gitplex shell-init")
+	}
+	return nil
 }
 
 func parseRepoModeArgs(args []string) (string, error) {
@@ -173,7 +211,46 @@ func parseOptionalMessageArgs(command string, args []string) (string, error) {
 	return message, nil
 }
 
-func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: gitplex <init|status|doctor|pull|stash|repo-mode|workspace-mode|rebase|checkout|cherrypick|branch|amend|push>")
+type commandHelp struct {
+	usage       string
+	description string
+}
+
+var commandHelps = []commandHelp{
+	{"gitplex init <manifest.yaml>", "Clone backing repos from the manifest and create the generated workspace."},
+	{"gitplex status", "Show workspace changes, repo branches, dirty backing repos, and push readiness."},
+	{"gitplex doctor", "Run preflight checks for tools, manifest graph, workspace sync, and repo state."},
+	{"gitplex pull", "Pull latest changes for backing repos and refresh the generated workspace."},
+	{"gitplex stash [git-stash-args...]", "Run git stash inside the generated workspace only."},
+	{"gitplex build", "Run the normal workspace build command."},
+	{"gitplex true-build", "Run the stricter build command for the generated workspace."},
+	{"gitplex shell-init", "Print shell helper functions for easier Gitplex navigation commands."},
+	{"gitplex repo-mode <repo>", "Print the backing clone path for one repo under .gitplex/repos."},
+	{"gitplex workspace-mode [--force]", "Rebuild the generated workspace from existing backing clones and print its path."},
+	{"gitplex checkout [repo] <branch>", "Checkout one repo or all repos to a branch, then refresh the workspace."},
+	{"gitplex rebase [repo] <branch>", "Rebase one repo or all repos onto origin/<branch>, then refresh the workspace."},
+	{"gitplex cherrypick <repo> <commit>", "Cherry-pick one commit into a backing repo and refresh the workspace."},
+	{"gitplex branch <branch>", "Create or reset the same branch in every backing repo for future pushes."},
+	{"gitplex amend [--message <message>]", "Rewrite the last commit in backing repos with current workspace changes."},
+	{"gitplex push [--message <message>]", "Commit and push changed backing repos in dependency order, updating downstream Nix inputs."},
+}
+
+func printCommandHelp(w io.Writer) {
+	fmt.Fprintln(w, "gitplex creates a generated multi-repo workspace for tightly coupled repositories.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  gitplex <command> [args]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	for _, command := range commandHelps {
+		fmt.Fprintf(w, "  %-42s %s\n", command.usage, command.description)
+	}
+}
+
+func usage(command string) error {
+	printCommandHelp(os.Stderr)
+	if command != "" {
+		return fmt.Errorf("unknown command %q", command)
+	}
 	return fmt.Errorf("unknown or missing command")
 }

@@ -38,6 +38,130 @@ func TestInitFetchesChangedManifestBranchForExistingClone(t *testing.T) {
 	}
 }
 
+func TestInitLocksWorkspaceFlakeBeforeBaselineCommit(t *testing.T) {
+	remote := seedRemoteRepoWithFlake(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithWorkspaceFlake(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init with workspace flake: %v", err)
+	}
+
+	workspacePath := filepath.Join(root, "workspace")
+	if _, err := os.Stat(filepath.Join(workspacePath, "flake.lock")); err != nil {
+		t.Fatalf("flake.lock missing: %v", err)
+	}
+	committedFiles := gitTest(t, workspacePath, "show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(committedFiles, "flake.lock") {
+		t.Fatalf("baseline commit files = %q, want flake.lock", committedFiles)
+	}
+	status := gitTest(t, workspacePath, "status", "--porcelain")
+	if status != "" {
+		t.Fatalf("workspace status = %q, want clean", status)
+	}
+}
+
+func TestInitCopiesEnvrcFromWorkspaceFlakeRepo(t *testing.T) {
+	remote := seedRemoteRepoWithFlakeAndEnvrc(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithWorkspaceFlake(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init with workspace envrc: %v", err)
+	}
+
+	workspacePath := filepath.Join(root, "workspace")
+	content, err := os.ReadFile(filepath.Join(workspacePath, ".envrc"))
+	if err != nil {
+		t.Fatalf(".envrc missing: %v", err)
+	}
+	if string(content) != "use flake\n" {
+		t.Fatalf(".envrc = %q, want use flake", content)
+	}
+	committedFiles := gitTest(t, workspacePath, "show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(committedFiles, ".envrc") {
+		t.Fatalf("baseline commit files = %q, want .envrc", committedFiles)
+	}
+	status := gitTest(t, workspacePath, "status", "--porcelain")
+	if status != "" {
+		t.Fatalf("workspace status = %q, want clean", status)
+	}
+}
+
+func TestInitCopiesRepoGitIgnoreIntoWorkspaceGitIgnore(t *testing.T) {
+	remote := seedRemoteRepoWithGitIgnore(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init with repo gitignore: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "workspace", ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		".pre-commit-config.yaml\n",
+		"cachix.log\n",
+		"# From app/.gitignore for app\n",
+		"# app ignores\n",
+		"app/**/build/\n",
+		"app/**/.env\n",
+		"app/logs\n",
+		"!app/logs/keep\n",
+		"app/nested/*.tmp\n",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("workspace .gitignore missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestInitAddsLocalFlakeInputsForMergedRepoDependencies(t *testing.T) {
+	appRemote := seedRemoteRepoWithDependencyFlake(t)
+	depRemote := seedRemoteRepoWithFlake(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeDependencyManifestWithWorkspaceFlake(t, manifestPath, appRemote, depRemote)
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init with dependency flake: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "workspace", "flake.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`dep.url = "path:` + filepath.ToSlash(filepath.Join(canonicalRoot, ".gitplex", "repos", "dep")) + `";`,
+		`dep.inputs.common.follows = "common";`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("workspace flake missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, `url = "ssh://git@example.test/dep.git";`) {
+		t.Fatalf("workspace flake kept remote dep input:\n%s", content)
+	}
+}
+
 func TestInitRefusesDirtyWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
@@ -288,6 +412,84 @@ func TestStashPassesThroughArgs(t *testing.T) {
 	list := gitTest(t, filepath.Join(root, "workspace"), "stash", "list")
 	if !strings.Contains(list, "workspace only") {
 		t.Fatalf("stash list = %q, want custom message", list)
+	}
+}
+
+func TestBuildRunsNixBuildInWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	cwdLog, argsLog := prependRecordingFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	cwd, err := os.ReadFile(cwdLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorkspace, err := filepath.EvalSymlinks(filepath.Join(root, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCwd := wantWorkspace + "\n"
+	if string(cwd) != wantCwd {
+		t.Fatalf("nix cwd = %q, want %q", cwd, wantCwd)
+	}
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "build\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n"
+	if string(args) != wantArgs {
+		t.Fatalf("nix args = %q, want %q", args, wantArgs)
+	}
+}
+
+func TestTrueBuildRunsNixBuildWithoutSubstitutesInWorkspace(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	cwdLog, argsLog := prependRecordingFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := TrueBuild(); err != nil {
+		t.Fatalf("true-build: %v", err)
+	}
+
+	cwd, err := os.ReadFile(cwdLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorkspace, err := filepath.EvalSymlinks(filepath.Join(root, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCwd := wantWorkspace + "\n"
+	if string(cwd) != wantCwd {
+		t.Fatalf("nix cwd = %q, want %q", cwd, wantCwd)
+	}
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "build\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n--option\nsubstitute\nfalse\n"
+	if string(args) != wantArgs {
+		t.Fatalf("nix args = %q, want %q", args, wantArgs)
 	}
 }
 
@@ -772,6 +974,33 @@ func TestRepoModePathRejectsUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestShellInitPrintsRepoModeWrapper(t *testing.T) {
+	out, err := captureStdout(t, ShellInit)
+	if err != nil {
+		t.Fatalf("shell-init: %v", err)
+	}
+	for _, want := range []string{
+		"gitplex() {",
+		`repo-mode)`,
+		`gitplex_path="$(command `,
+		` "$@")" || return`,
+		`cd "$gitplex_path"`,
+		`command `,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("shell-init output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	got := shellQuote(`/tmp/gitplex user's/bin/gitplex`)
+	want := `'/tmp/gitplex user'\''s/bin/gitplex'`
+	if got != want {
+		t.Fatalf("shellQuote = %q, want %q", got, want)
+	}
+}
+
 func TestWorkspaceModeRebuildsWorkspaceWithoutChangingBackingRepo(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
@@ -967,6 +1196,33 @@ func TestParseRepoModeArgs(t *testing.T) {
 	}
 }
 
+func TestParseShellInitArgs(t *testing.T) {
+	if err := parseShellInitArgs(nil); err != nil {
+		t.Fatalf("parse shell-init: %v", err)
+	}
+	if err := parseShellInitArgs([]string{"--shell", "zsh"}); err == nil {
+		t.Fatal("parseShellInitArgs succeeded, want usage error")
+	}
+}
+
+func TestParseBuildArgs(t *testing.T) {
+	if err := parseBuildArgs(nil); err != nil {
+		t.Fatalf("parse build: %v", err)
+	}
+	if err := parseBuildArgs([]string{"--bad"}); err == nil {
+		t.Fatal("parseBuildArgs succeeded, want usage error")
+	}
+}
+
+func TestParseTrueBuildArgs(t *testing.T) {
+	if err := parseTrueBuildArgs(nil); err != nil {
+		t.Fatalf("parse true-build: %v", err)
+	}
+	if err := parseTrueBuildArgs([]string{"--bad"}); err == nil {
+		t.Fatal("parseTrueBuildArgs succeeded, want usage error")
+	}
+}
+
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	originalStdout := os.Stdout
@@ -1017,6 +1273,123 @@ func seedRemoteRepo(t *testing.T) string {
 	gitTest(t, repo, "commit", "-am", "release")
 	gitTest(t, repo, "checkout", "main")
 	return repo
+}
+
+func seedRemoteRepoWithFlake(t *testing.T) string {
+	t.Helper()
+	repo := seedRemoteRepo(t)
+	flake := `{
+  inputs = {};
+  outputs = { self }: {};
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "flake.nix"), []byte(flake), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "add", "flake.nix")
+	gitTest(t, repo, "commit", "-m", "add flake")
+	return repo
+}
+
+func seedRemoteRepoWithDependencyFlake(t *testing.T) string {
+	t.Helper()
+	repo := seedRemoteRepo(t)
+	flake := `{
+  inputs = {
+    common.url = "github:example/common";
+    dep = {
+      type = "git";
+      url = "ssh://git@example.test/dep.git";
+      ref = "main";
+      inputs.common.follows = "common";
+    };
+  };
+  outputs = { self, common, dep }: {};
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "flake.nix"), []byte(flake), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "add", "flake.nix")
+	gitTest(t, repo, "commit", "-m", "add dependency flake")
+	return repo
+}
+
+func seedRemoteRepoWithFlakeAndEnvrc(t *testing.T) string {
+	t.Helper()
+	repo := seedRemoteRepoWithFlake(t)
+	if err := os.WriteFile(filepath.Join(repo, ".envrc"), []byte("use flake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "add", ".envrc")
+	gitTest(t, repo, "commit", "-m", "add envrc")
+	return repo
+}
+
+func seedRemoteRepoWithGitIgnore(t *testing.T) string {
+	t.Helper()
+	repo := seedRemoteRepo(t)
+	content := `# app ignores
+build/
+.env
+/logs
+!logs/keep
+nested/*.tmp
+`
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "add", ".gitignore")
+	gitTest(t, repo, "commit", "-m", "add gitignore")
+	return repo
+}
+
+func prependFakeNix(t *testing.T, root string) {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nixPath := filepath.Join(binDir, "nix")
+	script := `#!/bin/sh
+if [ "$1" = "flake" ] && [ "$2" = "lock" ]; then
+  printf '{"nodes":{},"root":"root","version":7}\n' > flake.lock
+  exit 0
+fi
+echo "unexpected nix args: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(nixPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func prependRecordingFakeNix(t *testing.T, root string) (string, string) {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwdLog := filepath.Join(root, "nix-cwd.log")
+	argsLog := filepath.Join(root, "nix-args.log")
+	t.Setenv("GITPLEX_FAKE_NIX_CWD_LOG", cwdLog)
+	t.Setenv("GITPLEX_FAKE_NIX_ARGS_LOG", argsLog)
+
+	nixPath := filepath.Join(binDir, "nix")
+	script := `#!/bin/sh
+printf '%s\n' "$PWD" > "$GITPLEX_FAKE_NIX_CWD_LOG"
+: > "$GITPLEX_FAKE_NIX_ARGS_LOG"
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "$GITPLEX_FAKE_NIX_ARGS_LOG"
+done
+exit 0
+`
+	if err := os.WriteFile(nixPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return cwdLog, argsLog
 }
 
 func addRemoteCommit(t *testing.T, repo, readmeContent string) string {
@@ -1073,6 +1446,22 @@ func loadProjectForTest(t *testing.T, root string) (Manifest, State) {
 func writeManifest(t *testing.T, path, remote, ref string) {
 	t.Helper()
 	data := []byte("workspace: workspace\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeManifestWithWorkspaceFlake(t *testing.T, path, remote, ref string) {
+	t.Helper()
+	data := []byte("workspace: workspace\nworkspace_files:\n  - repo: app\n    from: flake.nix\n    to: flake.nix\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeDependencyManifestWithWorkspaceFlake(t *testing.T, path, appRemote, depRemote string) {
+	t.Helper()
+	data := []byte("workspace: workspace\nworkspace_files:\n  - repo: app\n    from: flake.nix\n    to: flake.nix\n\nrepos:\n  dep:\n    url: " + depRemote + "\n    ref: main\n    modules:\n      - from: .\n        to: dep\n  app:\n    url: " + appRemote + "\n    ref: main\n    modules:\n      - from: .\n        to: app\n    dependencies:\n      dep:\n        flake_input: dep\n")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

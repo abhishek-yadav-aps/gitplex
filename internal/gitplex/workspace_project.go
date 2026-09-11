@@ -17,6 +17,10 @@ var (
 )
 
 func generateWorkspaceProject(root string, manifest Manifest, state State) error {
+	return generateWorkspaceProjectWithBaseline(root, manifest, state, true)
+}
+
+func generateWorkspaceProjectWithBaseline(root string, manifest Manifest, state State, commitBaseline bool) error {
 	workspacePath := filepath.Join(root, manifest.Workspace)
 	fmt.Println("discovering cabal packages")
 	packageDirs, err := discoverCabalPackageDirs(workspacePath)
@@ -53,11 +57,27 @@ func generateWorkspaceProject(root string, manifest Manifest, state State) error
 		}
 	}
 	fmt.Println("writing workspace gitignore")
-	if err := writeWorkspaceGitIgnore(workspacePath); err != nil {
+	if err := writeWorkspaceGitIgnore(workspacePath, manifest, state); err != nil {
+		return err
+	}
+	if err := stageWorkspaceForFlakeLock(workspacePath); err != nil {
+		return err
+	}
+	fmt.Println("locking workspace flake")
+	if err := lockWorkspaceFlake(workspacePath); err != nil {
 		return err
 	}
 	fmt.Println("preparing workspace git repo")
-	return prepareWorkspaceGit(workspacePath)
+	return prepareWorkspaceGit(workspacePath, commitBaseline)
+}
+
+func lockWorkspaceFlake(workspacePath string) error {
+	if _, err := os.Stat(filepath.Join(workspacePath, "flake.nix")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return runCommandAndPrint(workspacePath, "nix", "flake", "lock")
 }
 
 func discoverCabalPackageDirs(workspacePath string) ([]string, error) {
@@ -118,6 +138,11 @@ func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([
 	seen := map[string]bool{}
 	queue := make([]WorkspaceFile, 0, len(manifest.WorkspaceFiles))
 	queue = append(queue, manifest.WorkspaceFiles...)
+	envrcFiles, err := implicitWorkspaceEnvrcFiles(manifest, state)
+	if err != nil {
+		return nil, err
+	}
+	queue = append(queue, envrcFiles...)
 	var copied []string
 
 	for len(queue) > 0 {
@@ -152,6 +177,30 @@ func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([
 
 	sort.Strings(copied)
 	return copied, nil
+}
+
+func implicitWorkspaceEnvrcFiles(manifest Manifest, state State) ([]WorkspaceFile, error) {
+	var files []WorkspaceFile
+	for _, file := range manifest.WorkspaceFiles {
+		if filepath.ToSlash(file.To) != "flake.nix" {
+			continue
+		}
+		repoState, ok := state.Repos[file.Repo]
+		if !ok {
+			return nil, fmt.Errorf("workspace file repo %q is missing from state", file.Repo)
+		}
+		if _, err := os.Stat(filepath.Join(repoState.Path, ".envrc")); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		files = append(files, WorkspaceFile{
+			Repo: file.Repo,
+			From: ".envrc",
+			To:   ".envrc",
+		})
+	}
+	return files, nil
 }
 
 func discoverWorkspaceFileDependencies(repoRoot string, file WorkspaceFile) ([]WorkspaceFile, error) {
@@ -582,6 +631,14 @@ func patchWorkspaceFlake(workspacePath string, manifest Manifest, state State, e
 
 	existing := findDeclaredFlakeInputs(lines[start:end])
 	var additions []string
+	for _, input := range localRepoFlakeInputs(workspacePath, manifest, state) {
+		if existing[input.name] {
+			continue
+		}
+		additions = append(additions, input.lines...)
+		existing[input.name] = true
+	}
+
 	available := make([]string, 0, len(externalDeps))
 	for _, dep := range externalDeps {
 		if existing[dep] {
@@ -612,6 +669,45 @@ func patchWorkspaceFlake(workspacePath string, manifest Manifest, state State, e
 		return nil, err
 	}
 	return available, nil
+}
+
+type flakeInputAddition struct {
+	name  string
+	lines []string
+}
+
+func localRepoFlakeInputs(workspacePath string, manifest Manifest, state State) []flakeInputAddition {
+	needed := mergedRepoFlakeInputs(manifest)
+	names := make([]string, 0, len(needed))
+	for name := range needed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var additions []flakeInputAddition
+	for _, inputName := range names {
+		repoState, ok := state.Repos[inputName]
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(repoState.Path, "flake.nix")); err != nil {
+			continue
+		}
+		inputPath := filepath.ToSlash(repoState.Path)
+		additions = append(additions, flakeInputAddition{
+			name: inputName,
+			lines: []string{
+				fmt.Sprintf("    %s.url = \"%s\";", inputName, nixFlakePathURL(inputPath)),
+				fmt.Sprintf("    %s.inputs.common.follows = \"common\";", inputName),
+				"",
+			},
+		})
+	}
+	return additions
+}
+
+func nixFlakePathURL(path string) string {
+	return "path:" + strings.ReplaceAll(path, `"`, `\"`)
 }
 
 func findInputsBlock(lines []string) (int, int) {
@@ -706,16 +802,138 @@ extra-prog-path: %s
 	return os.WriteFile(filepath.Join(cabalDir, "config"), []byte(content), 0o644)
 }
 
-func writeWorkspaceGitIgnore(workspacePath string) error {
-	content := `dist-newstyle/
+func writeWorkspaceGitIgnore(workspacePath string, manifest Manifest, state State) error {
+	var b strings.Builder
+	b.WriteString(`dist-newstyle/
 .cabal-dir/*
 !.cabal-dir/
 !.cabal-dir/config
-`
-	return os.WriteFile(filepath.Join(workspacePath, ".gitignore"), []byte(content), 0o644)
+.pre-commit-config.yaml
+cachix.log
+`)
+
+	repoNames := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		repoNames = append(repoNames, name)
+	}
+	sort.Strings(repoNames)
+
+	for _, name := range repoNames {
+		repoState, ok := state.Repos[name]
+		if !ok {
+			return fmt.Errorf("repo %q is missing from state", name)
+		}
+		data, err := os.ReadFile(filepath.Join(repoState.Path, ".gitignore"))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		modules := append([]ModuleMapping{}, manifest.Repos[name].Modules...)
+		sort.Slice(modules, func(i, j int) bool {
+			return modules[i].To < modules[j].To
+		})
+		for _, module := range modules {
+			b.WriteString("\n")
+			fmt.Fprintf(&b, "# From %s/.gitignore for %s\n", name, filepath.ToSlash(module.To))
+			for _, line := range strings.Split(string(data), "\n") {
+				for _, translated := range translateGitIgnoreLine(line, module.To) {
+					b.WriteString(translated)
+					b.WriteString("\n")
+				}
+			}
+		}
+	}
+
+	return os.WriteFile(filepath.Join(workspacePath, ".gitignore"), []byte(b.String()), 0o644)
 }
 
-func prepareWorkspaceGit(workspacePath string) error {
+func translateGitIgnoreLine(line, moduleTo string) []string {
+	if line == "" || strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+		return []string{line}
+	}
+
+	negated := strings.HasPrefix(line, "!")
+	pattern := line
+	if negated {
+		pattern = strings.TrimPrefix(pattern, "!")
+	}
+	prefix := ""
+	if negated {
+		prefix = "!"
+	}
+	modulePrefix := filepath.ToSlash(filepath.Clean(moduleTo))
+	pattern = filepath.ToSlash(pattern)
+	anchoredPattern := strings.TrimLeft(pattern, "/")
+	if anchoredPattern == "" {
+		return []string{line}
+	}
+	scopedPattern := anchoredPattern
+	if modulePrefix != "." {
+		scopedPattern = modulePrefix + "/" + anchoredPattern
+	}
+
+	hasPathSeparator := strings.Contains(strings.TrimSuffix(pattern, "/"), "/")
+	if strings.HasPrefix(pattern, "/") || hasPathSeparator {
+		return []string{prefix + scopedPattern}
+	}
+	if modulePrefix == "." {
+		return []string{prefix + anchoredPattern}
+	}
+	return []string{prefix + modulePrefix + "/**/" + anchoredPattern}
+}
+
+func stageWorkspaceForFlakeLock(workspacePath string) error {
+	if _, err := os.Stat(filepath.Join(workspacePath, "flake.nix")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := ensureWorkspaceGit(workspacePath); err != nil {
+		return err
+	}
+	return gitAddWorkspace(workspacePath)
+}
+
+func prepareWorkspaceGit(workspacePath string, commitBaseline bool) error {
+	if err := ensureWorkspaceGit(workspacePath); err != nil {
+		return err
+	}
+	if commitBaseline {
+		if err := gitAddWorkspace(workspacePath); err != nil {
+			return err
+		}
+		dirty, err := gitHasChanges(workspacePath)
+		if err != nil {
+			return err
+		}
+		if !dirty {
+			return nil
+		}
+		_, err = git(workspacePath, "commit", "-m", "chore: gitplex generated workspace baseline")
+		return err
+	}
+	_, _ = git(workspacePath, "reset")
+	if _, err := git(workspacePath, "rev-parse", "--verify", "HEAD"); err == nil {
+		return nil
+	}
+	if err := gitAddWorkspace(workspacePath); err != nil {
+		return err
+	}
+	dirty, err := gitHasChanges(workspacePath)
+	if err != nil {
+		return err
+	}
+	if !dirty {
+		return nil
+	}
+	_, err = git(workspacePath, "commit", "-m", "chore: gitplex generated workspace baseline")
+	return err
+}
+
+func ensureWorkspaceGit(workspacePath string) error {
 	if _, err := os.Stat(filepath.Join(workspacePath, ".git")); os.IsNotExist(err) {
 		if _, err := git(workspacePath, "init"); err != nil {
 			return err
@@ -730,19 +948,10 @@ func prepareWorkspaceGit(workspacePath string) error {
 	if _, err := git(workspacePath, "config", "user.email", "gitplex@example.invalid"); err != nil {
 		return err
 	}
-	if _, err := git(workspacePath, "rev-parse", "--verify", "HEAD"); err == nil {
-		return nil
-	}
-	if _, err := git(workspacePath, "add", "-A"); err != nil {
-		return err
-	}
-	dirty, err := gitHasChanges(workspacePath)
-	if err != nil {
-		return err
-	}
-	if !dirty {
-		return nil
-	}
-	_, err = git(workspacePath, "commit", "-m", "chore: gitplex generated workspace baseline")
+	return nil
+}
+
+func gitAddWorkspace(workspacePath string) error {
+	_, err := git(workspacePath, "add", "-A")
 	return err
 }
