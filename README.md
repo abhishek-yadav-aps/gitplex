@@ -115,9 +115,9 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 
 `gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
 
-`gitplex build` runs `nix build github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders ''` inside the generated workspace.
+`gitplex build` runs `nix build --refresh github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders ''` inside the generated workspace.
 
-`gitplex true-build` runs `nix build github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders '' --option substitute false` inside the generated workspace.
+`gitplex true-build` runs `nix build --refresh github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders '' --option substitute false` inside the generated workspace.
 
 `gitplex shell-init` prints a zsh/bash-compatible shell function. Add `eval "$(gitplex shell-init)"` to your shell session or shell startup file to make `gitplex repo-mode <repo>` and `gitplex workspace-mode` change your current terminal directory directly. After installing the function, call the binary directly, for example `command gitplex repo-mode <repo>` when `gitplex` is on `PATH`, if you need the raw backing clone path for scripts.
 
@@ -126,3 +126,5 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 `gitplex repo-mode <repo>` prints the backing clone path for a repo under `.gitplex/repos`. Use `cd "$(gitplex repo-mode <repo>)"`, or install the shell function from `gitplex shell-init`, to move the current shell into that backing repo for manual changes.
 
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.
+
+Only staged generated-workspace files are pushed. Unstaged workspace edits are preserved locally, and Gitplex skips the final workspace refresh when they are present so it does not overwrite work that was intentionally left unstaged.

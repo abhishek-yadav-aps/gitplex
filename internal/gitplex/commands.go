@@ -353,6 +353,7 @@ func runWorkspaceNixBuild(disableSubstitutes bool) error {
 	workspacePath := filepath.Join(root, manifest.Workspace)
 	args := []string{
 		"build",
+		"--refresh",
 		"github:srid/devour-flake#default",
 		"-L",
 		"--print-out-paths",
@@ -933,6 +934,15 @@ func Push(message string) error {
 	if err != nil {
 		return err
 	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	unstagedWorkspacePaths, err := workspaceUnstagedPaths(workspacePath)
+	if err != nil {
+		return err
+	}
+	stagedWorkspacePaths, err := workspaceStagedPaths(workspacePath)
+	if err != nil {
+		return err
+	}
 	order, err := topoOrder(manifest)
 	if err != nil {
 		return err
@@ -948,7 +958,7 @@ func Push(message string) error {
 		if currentBranch(state, name, repo) == "" {
 			return fmt.Errorf("repo %q has no push branch; run gitplex branch <branch> or set repo ref in manifest", name)
 		}
-		if err := syncWorkspaceToRepo(root, manifest, state, name); err != nil {
+		if err := syncStagedWorkspaceToRepo(root, manifest, state, name, stagedWorkspacePaths); err != nil {
 			return err
 		}
 		skipRepo := false
@@ -987,19 +997,21 @@ func Push(message string) error {
 		if skipRepo {
 			continue
 		}
-		dirty, err := gitHasChanges(repoPath)
+		if len(updatedFlakeInputs) > 0 {
+			if _, err := git(repoPath, "add", "-A", "--", "flake.nix", "flake.lock"); err != nil {
+				return err
+			}
+		}
+		staged, err := gitHasStagedChanges(repoPath)
 		if err != nil {
 			return err
 		}
-		if dirty {
-			if _, err := git(repoPath, "add", "-A"); err != nil {
-				return err
-			}
-			if err := runGitAndPrint(repoPath, "commit", "-m", message); err != nil {
-				return err
-			}
-		} else {
-			fmt.Println("no changes to commit")
+		if !staged {
+			fmt.Println("no changes to push; skipping")
+			continue
+		}
+		if err := runGitAndPrint(repoPath, "commit", "-m", message); err != nil {
+			return err
 		}
 		if err := runGitAndPrint(repoPath, "push", "-u", "origin", currentBranch(state, name, repo)); err != nil {
 			failedRepos[name] = true
@@ -1015,11 +1027,15 @@ func Push(message string) error {
 		state.Repos[name] = repoState
 	}
 
-	if err := refreshWorkspace(root, manifest, state); err != nil {
-		return err
-	}
-	if err := generateWorkspaceProject(root, manifest, state); err != nil {
-		return err
+	if len(unstagedWorkspacePaths) == 0 {
+		if err := refreshWorkspace(root, manifest, state); err != nil {
+			return err
+		}
+		if err := generateWorkspaceProject(root, manifest, state); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("workspace has unstaged changes in %v; skipped workspace refresh to preserve them\n", unstagedWorkspacePaths)
 	}
 	if err := saveState(root, state); err != nil {
 		return err
@@ -1028,6 +1044,44 @@ func Push(message string) error {
 		return fmt.Errorf("push failed:\n%s", strings.Join(pushErrors, "\n"))
 	}
 	return nil
+}
+
+func workspaceUnstagedPaths(workspacePath string) ([]string, error) {
+	unstaged, err := git(workspacePath, "diff", "--name-only")
+	if err != nil {
+		return nil, err
+	}
+	untracked, err := git(workspacePath, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	if unstaged != "" {
+		paths = append(paths, strings.Split(unstaged, "\n")...)
+	}
+	if untracked != "" {
+		paths = append(paths, strings.Split(untracked, "\n")...)
+	}
+	return paths, nil
+}
+
+func workspaceStagedPaths(workspacePath string) ([]string, error) {
+	out, err := git(workspacePath, "diff", "--cached", "--name-only")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+func gitHasStagedChanges(repoPath string) (bool, error) {
+	out, err := git(repoPath, "diff", "--cached", "--name-only")
+	if err != nil {
+		return false, err
+	}
+	return out != "", nil
 }
 
 func runGitAndPrint(dir string, args ...string) error {
@@ -1121,6 +1175,60 @@ func syncWorkspaceToRepo(root string, manifest Manifest, state State, name strin
 		}
 	}
 	return nil
+}
+
+func syncStagedWorkspaceToRepo(root string, manifest Manifest, state State, name string, stagedPaths []string) error {
+	repo := manifest.Repos[name]
+	repoPath := state.Repos[name].Path
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	for _, stagedPath := range stagedPaths {
+		for _, module := range repo.Modules {
+			moduleRel, ok := workspacePathInModule(stagedPath, module.To)
+			if !ok {
+				continue
+			}
+			dstRel := filepath.Clean(filepath.Join(module.From, filepath.FromSlash(moduleRel)))
+			dst := filepath.Join(repoPath, dstRel)
+			blob, _, err := gitOutput(workspacePath, "show", ":"+stagedPath)
+			if err != nil {
+				if err := os.RemoveAll(dst); err != nil {
+					return err
+				}
+			} else {
+				mode := os.FileMode(0o644)
+				if info, statErr := os.Stat(filepath.Join(workspacePath, filepath.FromSlash(stagedPath))); statErr == nil {
+					mode = info.Mode()
+				}
+				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dst, []byte(blob), mode); err != nil {
+					return err
+				}
+			}
+			if _, err := git(repoPath, "add", "-A", "--", dstRel); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+func workspacePathInModule(path, moduleTo string) (string, bool) {
+	path = filepath.ToSlash(filepath.Clean(path))
+	moduleTo = filepath.ToSlash(filepath.Clean(moduleTo))
+	if moduleTo == "." {
+		return path, true
+	}
+	if path == moduleTo {
+		return ".", true
+	}
+	prefix := moduleTo + "/"
+	if strings.HasPrefix(path, prefix) {
+		return strings.TrimPrefix(path, prefix), true
+	}
+	return "", false
 }
 
 func changedRepos(root string, manifest Manifest, state State) ([]string, error) {

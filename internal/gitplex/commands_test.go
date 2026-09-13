@@ -194,6 +194,131 @@ func TestInitRefusesDirtyWorkspace(t *testing.T) {
 	}
 }
 
+func TestPushSkipsCleanDependencyAndDoesNotUpdateDependentFlake(t *testing.T) {
+	appRemote := seedRemoteRepoWithDependencyFlake(t)
+	depRemote := seedRemoteRepoWithFlake(t)
+	gitTest(t, appRemote, "config", "receive.denyCurrentBranch", "updateInstead")
+	gitTest(t, depRemote, "config", "receive.denyCurrentBranch", "updateInstead")
+
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeDependencyManifestWithWorkspaceFlake(t, manifestPath, appRemote, depRemote)
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init dependency manifest: %v", err)
+	}
+	if err := Branch("test/gitplex-push-skip-clean-dep"); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	for _, repo := range []string{"app", "dep"} {
+		repoPath := filepath.Join(root, ".gitplex", "repos", repo)
+		gitTest(t, repoPath, "config", "user.name", "Gitplex Test")
+		gitTest(t, repoPath, "config", "user.email", "gitplex@example.test")
+		emptyHooks := filepath.Join(root, "empty-hooks")
+		if err := os.MkdirAll(emptyHooks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, repoPath, "config", "core.hooksPath", emptyHooks)
+	}
+
+	workspaceReadme := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceReadme, []byte("app workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Join(root, "workspace"), "add", "app/README.md")
+
+	if err := Push("test push"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	appFlake, err := os.ReadFile(filepath.Join(root, ".gitplex", "repos", "app", "flake.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(appFlake), `rev =`) {
+		t.Fatalf("app flake was updated for clean dep:\n%s", appFlake)
+	}
+
+	depCommits := gitTest(t, filepath.Join(root, ".gitplex", "repos", "dep"), "rev-list", "--count", "HEAD")
+	remoteDepCommits := gitTest(t, depRemote, "rev-list", "--count", "HEAD")
+	if depCommits != remoteDepCommits {
+		t.Fatalf("dep was pushed unexpectedly: local commits %s, remote commits %s", depCommits, remoteDepCommits)
+	}
+}
+
+func TestPushOnlyUsesStagedWorkspaceChanges(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	gitTest(t, remote, "config", "receive.denyCurrentBranch", "updateInstead")
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := Branch("test/gitplex-staged-only"); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	gitTest(t, repoPath, "config", "user.name", "Gitplex Test")
+	gitTest(t, repoPath, "config", "user.email", "gitplex@example.test")
+	emptyHooks := filepath.Join(root, "empty-hooks")
+	if err := os.MkdirAll(emptyHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "config", "core.hooksPath", emptyHooks)
+
+	workspaceReadme := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceReadme, []byte("staged workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Join(root, "workspace"), "add", "app/README.md")
+	if err := os.WriteFile(workspaceReadme, []byte("unstaged follow-up edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unstagedWorkspaceFile := filepath.Join(root, "workspace", "app", "src", "README.md")
+	if err := os.WriteFile(unstagedWorkspaceFile, []byte("unstaged separate edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Push("test push"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	repoContent, err := os.ReadFile(filepath.Join(repoPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoContent) != "staged workspace edit\n" {
+		t.Fatalf("repo content = %q, want staged workspace edit", repoContent)
+	}
+	repoUnstagedContent, err := os.ReadFile(filepath.Join(repoPath, "src", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoUnstagedContent) != "main src\n" {
+		t.Fatalf("repo src content = %q, want unchanged main src", repoUnstagedContent)
+	}
+
+	content, readErr := os.ReadFile(workspaceReadme)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "unstaged follow-up edit\n" {
+		t.Fatalf("workspace content = %q, want unstaged edit preserved", content)
+	}
+	unstagedContent, readErr := os.ReadFile(unstagedWorkspaceFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(unstagedContent) != "unstaged separate edit\n" {
+		t.Fatalf("workspace src content = %q, want unstaged separate edit preserved", unstagedContent)
+	}
+}
+
 func TestRebaseAllReposOntoBranchAndRefreshesWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
@@ -448,7 +573,7 @@ func TestBuildRunsNixBuildInWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := "build\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n"
+	wantArgs := "build\n--refresh\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n"
 	if string(args) != wantArgs {
 		t.Fatalf("nix args = %q, want %q", args, wantArgs)
 	}
@@ -487,7 +612,7 @@ func TestTrueBuildRunsNixBuildWithoutSubstitutesInWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := "build\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n--option\nsubstitute\nfalse\n"
+	wantArgs := "build\n--refresh\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n--option\nsubstitute\nfalse\n"
 	if string(args) != wantArgs {
 		t.Fatalf("nix args = %q, want %q", args, wantArgs)
 	}
