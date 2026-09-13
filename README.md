@@ -12,11 +12,7 @@ Install the latest macOS or Linux release:
 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh
 ```
 
-Install with Homebrew:
-
-```sh
-brew install --cask abhishek-yadav-aps/tap/gitplex
-```
+Homebrew distribution is planned, but the tap is not published yet.
 
 Install a specific version:
 
@@ -43,7 +39,7 @@ git push origin v0.1.0
 
 The release workflow publishes `darwin` and `linux` binaries for `amd64` and `arm64`, plus checksums.
 
-To publish the Homebrew tap automatically, create a public GitHub repository named `homebrew-tap`, then add a repository secret named `HOMEBREW_TAP_GITHUB_TOKEN` to this `gitplex` repository. The token needs write access to `abhishek-yadav-aps/homebrew-tap`.
+To publish a Homebrew tap automatically, add the Homebrew cask configuration back to `.goreleaser.yaml`, create a public GitHub repository named `homebrew-tap`, then add a repository secret named `HOMEBREW_TAP_GITHUB_TOKEN` to this `gitplex` repository. The token needs write access to `abhishek-yadav-aps/homebrew-tap`.
 
 ## Commands
 

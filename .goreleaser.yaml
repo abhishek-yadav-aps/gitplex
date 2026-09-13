@@ -33,24 +33,6 @@ archives:
 checksum:
   name_template: checksums.txt
 
-homebrew_casks:
-  - name: gitplex
-    ids:
-      - gitplex
-    binaries:
-      - gitplex
-    repository:
-      owner: abhishek-yadav-aps
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    commit_author:
-      name: goreleaserbot
-      email: bot@goreleaser.com
-    commit_msg_template: "Update gitplex Homebrew cask to {{ .Tag }}"
-    homepage: "https://github.com/abhishek-yadav-aps/gitplex"
-    description: "Create a generated multi-repo working directory"
-
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
