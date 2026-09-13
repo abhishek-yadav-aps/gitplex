@@ -11,6 +11,11 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: Gitplex CI
+      GIT_AUTHOR_EMAIL: gitplex-ci@example.invalid
+      GIT_COMMITTER_NAME: Gitplex CI
+      GIT_COMMITTER_EMAIL: gitplex-ci@example.invalid
     steps:
       - name: Checkout
         uses: actions/checkout@v4
