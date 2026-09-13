@@ -1,29 +1,29 @@
 workspace: examples/init-demo/workspace
 
 repos:
-  credit-db:
-    url: examples/init-demo/remotes/credit-db
+  app-db:
+    url: examples/init-demo/remotes/app-db
     ref: main
     modules:
       - from: .
-        to: credit-db
+        to: app-db
 
-  credit-gateway:
-    url: examples/init-demo/remotes/credit-gateway
+  app-gateway:
+    url: examples/init-demo/remotes/app-gateway
     ref: main
     modules:
       - from: .
-        to: credit-gateway
+        to: app-gateway
     dependencies:
-      credit-db:
-        flake_input: credit-db
+      app-db:
+        flake_input: app-db
 
-  credit-lsp:
-    url: examples/init-demo/remotes/credit-lsp
+  app-service:
+    url: examples/init-demo/remotes/app-service
     ref: main
     modules:
       - from: .
-        to: credit-lsp
+        to: app-service
     dependencies:
-      credit-gateway:
-        flake_input: credit-gateway
+      app-gateway:
+        flake_input: app-gateway

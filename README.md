@@ -55,20 +55,20 @@ gitplex true-build
 eval "$(gitplex shell-init)"
 gitplex workspace-mode
 gitplex workspace-mode --force
-gitplex repo-mode credit-api
+gitplex repo-mode app-api
 gitplex checkout release/main
-gitplex checkout credit-api release/main
+gitplex checkout app-api release/main
 gitplex rebase release/main
-gitplex rebase credit-api release/main
-gitplex cherrypick credit-api abc1234
+gitplex rebase app-api release/main
+gitplex cherrypick app-api abc1234
 gitplex amend
-gitplex amend --message "credit repo changes"
-gitplex push --message "credit repo changes"
+gitplex amend --message "app repo changes"
+gitplex push --message "app repo changes"
 ```
 
 ## Manifest
 
-See [examples/credit-repos.yaml](examples/credit-repos.yaml).
+See [examples/init-demo/manifest.yaml](examples/init-demo/manifest.yaml).
 
 The manifest has three main parts:
 

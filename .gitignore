@@ -2,5 +2,6 @@
 .gitplex-inspect/
 workspace/
 /gitplex
+/.direnv/
 .DS_Store
 examples/init-demo/remotes/
