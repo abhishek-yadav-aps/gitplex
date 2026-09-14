@@ -826,17 +826,6 @@ func Amend(message string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range order {
-		repo := manifest.Repos[name]
-		repoPath := state.Repos[name].Path
-		if currentBranch(state, name, repo) == "" {
-			return fmt.Errorf("repo %q has no amend branch; run gitplex branch <branch> or set repo ref in manifest", name)
-		}
-		if err := ensureAmendableHead(name, repoPath); err != nil {
-			return err
-		}
-	}
-
 	publishedHeads := map[string]string{}
 	for _, name := range order {
 		repo := manifest.Repos[name]
@@ -872,14 +861,39 @@ func Amend(message string) error {
 			}
 		}
 
-		if err := runGitAndPrint(repoPath, "reset", "--mixed", "HEAD~1"); err != nil {
+		dirty, err := gitHasChanges(repoPath)
+		if err != nil {
 			return err
 		}
-		if _, err := git(repoPath, "add", "-A"); err != nil {
+		if !dirty {
+			fmt.Println("no changes to amend")
+			continue
+		}
+		if currentBranch(state, name, repo) == "" {
+			return fmt.Errorf("repo %q has no amend branch; run gitplex branch <branch> or set repo ref in manifest", name)
+		}
+
+		hasParent, err := gitHeadHasParent(repoPath)
+		if err != nil {
 			return err
 		}
-		if err := gitCommitWithMessage(repoPath, commitMessage); err != nil {
-			return err
+		if hasParent {
+			if err := runGitAndPrint(repoPath, "reset", "--mixed", "HEAD~1"); err != nil {
+				return err
+			}
+			if _, err := git(repoPath, "add", "-A"); err != nil {
+				return err
+			}
+			if err := gitCommitWithMessage(repoPath, commitMessage); err != nil {
+				return err
+			}
+		} else {
+			if _, err := git(repoPath, "add", "-A"); err != nil {
+				return err
+			}
+			if err := gitAmendWithMessage(repoPath, commitMessage); err != nil {
+				return err
+			}
 		}
 		head, err := gitHead(repoPath)
 		if err != nil {
@@ -900,14 +914,26 @@ func Amend(message string) error {
 	return saveState(root, state)
 }
 
-func ensureAmendableHead(name, repoPath string) error {
-	if _, err := git(repoPath, "rev-parse", "--verify", "HEAD~1"); err != nil {
-		return fmt.Errorf("repo %q cannot amend because HEAD has no parent commit", name)
+func gitHeadHasParent(repoPath string) (bool, error) {
+	_, _, err := gitOutput(repoPath, "rev-parse", "--verify", "HEAD~1")
+	if err == nil {
+		return true, nil
 	}
-	return nil
+	if _, ok := err.(*exec.ExitError); ok {
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse --verify HEAD~1: %w", err)
 }
 
 func gitCommitWithMessage(repoPath, message string) error {
+	return gitCommitWithMessageArgs(repoPath, message, "commit", "--allow-empty")
+}
+
+func gitAmendWithMessage(repoPath, message string) error {
+	return gitCommitWithMessageArgs(repoPath, message, "commit", "--amend", "--allow-empty")
+}
+
+func gitCommitWithMessageArgs(repoPath, message string, args ...string) error {
 	file, err := os.CreateTemp("", "gitplex-commit-message-*")
 	if err != nil {
 		return err
@@ -926,7 +952,7 @@ func gitCommitWithMessage(repoPath, message string) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return runGitAndPrint(repoPath, "commit", "--allow-empty", "-F", file.Name())
+	return runGitAndPrint(repoPath, append(args, "-F", file.Name())...)
 }
 
 func Push(message string) error {

@@ -1032,7 +1032,7 @@ func TestAmendAllReposWithMessageOverride(t *testing.T) {
 	}
 }
 
-func TestAmendRejectsRepoWithNoParentCommit(t *testing.T) {
+func TestAmendSkipsCleanRepoWithNoParentCommit(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
 	chdir(t, root)
@@ -1042,14 +1042,54 @@ func TestAmendRejectsRepoWithNoParentCommit(t *testing.T) {
 	if err := Init(manifestPath); err != nil {
 		t.Fatalf("init main: %v", err)
 	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	oldHead := gitTest(t, repoPath, "rev-parse", "HEAD")
 
-	err := Amend("")
-	if err == nil {
-		t.Fatal("amend succeeded with no parent commit")
+	if err := Amend(""); err != nil {
+		t.Fatalf("amend clean root repo: %v", err)
 	}
-	want := "repo \"app\" cannot amend because HEAD has no parent commit"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
+
+	newHead := gitTest(t, repoPath, "rev-parse", "HEAD")
+	if newHead != oldHead {
+		t.Fatalf("HEAD = %q, want unchanged %q", newHead, oldHead)
+	}
+}
+
+func TestAmendAmendsDirtyRepoWithNoParentCommit(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	oldCount := gitTest(t, repoPath, "rev-list", "--count", "HEAD")
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Amend("root replacement"); err != nil {
+		t.Fatalf("amend dirty root repo: %v", err)
+	}
+
+	newCount := gitTest(t, repoPath, "rev-list", "--count", "HEAD")
+	if newCount != oldCount {
+		t.Fatalf("commit count = %s, want %s", newCount, oldCount)
+	}
+	message := strings.TrimSpace(gitTest(t, repoPath, "log", "-1", "--pretty=%B"))
+	if message != "root replacement" {
+		t.Fatalf("message = %q, want root replacement", message)
+	}
+	content, err := os.ReadFile(filepath.Join(repoPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "workspace edit\n" {
+		t.Fatalf("repo content = %q, want workspace edit", content)
 	}
 }
 
