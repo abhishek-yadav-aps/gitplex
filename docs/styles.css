@@ -282,6 +282,7 @@ h3 {
 }
 
 .metric-grid div {
+  container-type: inline-size;
   min-height: 204px;
   padding: 28px 22px;
   border-bottom: 1px solid var(--line);
@@ -302,7 +303,8 @@ h3 {
   color: var(--ink);
   max-width: 100%;
   overflow-wrap: anywhere;
-  font-size: clamp(1.45rem, 2.6vw, 2.28rem);
+  word-break: normal;
+  font-size: clamp(1.35rem, 18cqi, 2.1rem);
   font-weight: 800;
   line-height: 1;
 }
