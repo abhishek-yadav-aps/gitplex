@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gitplex - multi-repo workspaces that push cleanly</title>
+    <meta
+      name="description"
+      content="Gitplex creates a generated multi-repo workspace while keeping every backing repository separate, clean, and publishable."
+    >
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f4f1e8'/%3E%3Cpath d='M7 8h18v4H11v8h14v4H7z' fill='%230d1117'/%3E%3Cpath d='M13 14h12v4H13z' fill='%23b85c18'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Gitplex home">
+        <span>git<span>plex</span></span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#why">01 why</a>
+        <a href="#workflow">02 workflow</a>
+        <a href="#commands">03 commands</a>
+        <a href="#safety">04 safety</a>
+        <a href="#install">05 install</a>
+      </nav>
+      <a class="github-link" href="https://github.com/abhishek-yadav-aps/gitplex">GitHub</a>
+    </header>
+
+    <main id="top">
+      <section class="hero grid-section" aria-labelledby="hero-title">
+        <div class="release-strip">
+          <a href="https://github.com/abhishek-yadav-aps/gitplex/releases/tag/v0.1.4">latest release v0.1.4</a>
+        </div>
+
+        <div class="hero-frame">
+          <div class="hero-copy">
+            <p class="kicker">GITPLEX V0.1.4 / MULTI-REPO WORKSPACE CLI / GO BINARY</p>
+            <p class="comment">// edit one generated tree. publish many repos.</p>
+            <h1 id="hero-title">One workspace for repos that ship together.</h1>
+            <p class="lede">
+              Gitplex builds a combined working directory for tightly coupled repositories.
+              The editable view lives in <strong>workspace</strong>; the real clones stay in
+              <strong>.gitplex/repos</strong>. You stage once, push in dependency order, and keep
+              local experiments out of published commits.
+            </p>
+
+            <button class="copy-command" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh">
+              <span>$</span>
+              <code>curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh</code>
+              <span class="copy-label">COPY</span>
+            </button>
+
+            <div class="hero-actions" aria-label="Primary actions">
+              <a href="#install">Install</a>
+              <a href="#workflow">See the flow</a>
+            </div>
+          </div>
+
+          <dl class="metric-grid" aria-label="Gitplex facts">
+            <div>
+              <dt>BACKING CLONES</dt>
+              <dd>.gitplex/repos</dd>
+              <p>each repository remains inspectable and publishable</p>
+            </div>
+            <div>
+              <dt>EDITABLE VIEW</dt>
+              <dd>workspace</dd>
+              <p>a generated tree for cross-repo changes</p>
+            </div>
+            <div>
+              <dt>PUSH MODEL</dt>
+              <dd>staged only</dd>
+              <p>unstaged workspace edits stay local</p>
+            </div>
+            <div>
+              <dt>BUILD PATH</dt>
+              <dd>Nix aware</dd>
+              <p>build and true-build run inside the workspace</p>
+            </div>
+            <div>
+              <dt>RELEASES</dt>
+              <dd>macOS + Linux</dd>
+              <p>amd64 and arm64 archives with checksums</p>
+            </div>
+            <div>
+              <dt>RUNTIME</dt>
+              <dd>Go CLI</dd>
+              <p>one command surface for repo choreography</p>
+            </div>
+          </dl>
+        </div>
+
+        <div class="workspace-mock" aria-label="Gitplex workspace preview">
+          <div class="mock-title">~/src/gitplex-demo / generated workspace</div>
+          <div class="mock-window">
+            <div class="mock-sidebar">
+              <div class="mock-url">gitplex status</div>
+              <ul>
+                <li><span class="dir">v</span> workspace</li>
+                <li class="changed">app-db <b>M</b></li>
+                <li class="changed">app-gateway <b>M</b></li>
+                <li>app-service</li>
+                <li><span class="dir">&gt;</span> .gitplex/repos</li>
+                <li>manifest.yaml</li>
+              </ul>
+            </div>
+            <div class="mock-code" aria-label="Example command output">
+<pre><code>$ gitplex doctor
+[OK] manifest graph is valid
+[OK] workspace matches selected repos
+[OK] app-db upstream readable
+[OK] app-gateway upstream readable
+
+$ git diff --cached --name-only
+app-db/src/Schema.hs
+app-gateway/src/Api.hs
+
+$ gitplex push --message "wire new credit path"
+commit app-db      9f31c80
+update app-gateway input app-db
+commit app-gateway 77a624d
+push dependency order complete</code></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="section two-col">
+        <div>
+          <p class="section-index">[ 01 ] /why</p>
+          <h2>Monorepo ergonomics. Polyrepo ownership.</h2>
+          <p>
+            Some stacks need separate repositories for ownership, release, or access boundaries,
+            but developers still need to change them as one product. Gitplex gives you a single
+            generated edit surface without pretending the repositories stopped being independent.
+          </p>
+        </div>
+        <div class="compare-table" role="table" aria-label="Gitplex comparison">
+          <div role="row">
+            <span role="columnheader">without</span>
+            <span role="columnheader">with Gitplex</span>
+          </div>
+          <div role="row">
+            <span role="cell">jump between cloned repos</span>
+            <span role="cell">work in one generated tree</span>
+          </div>
+          <div role="row">
+            <span role="cell">manually update dependency refs</span>
+            <span role="cell">push updates in graph order</span>
+          </div>
+          <div role="row">
+            <span role="cell">risk publishing scratch edits</span>
+            <span role="cell">publish only staged workspace files</span>
+          </div>
+          <div role="row">
+            <span role="cell">recreate shell context</span>
+            <span role="cell">jump with workspace-mode and repo-mode</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="section">
+        <div class="section-head">
+          <p class="section-index">[ 02 ] /workflow</p>
+          <h2>The working tree has a memory of every repo.</h2>
+          <p>
+            Gitplex keeps a manifest, backing clone state, and generated workspace in sync so the
+            cross-repo edit path stays quick while the publication path stays explicit.
+          </p>
+        </div>
+
+        <div class="flow-grid">
+          <article>
+            <span>01 INIT</span>
+            <h3>Clone the graph</h3>
+            <p>Read a manifest, clone each repo, map modules into the generated workspace, and create the baseline.</p>
+<pre><code>gitplex init manifest.yaml</code></pre>
+          </article>
+          <article>
+            <span>02 CHANGE</span>
+            <h3>Edit together</h3>
+            <p>Use the workspace for cross-package edits while backing clones remain under Gitplex control.</p>
+<pre><code>gitplex status
+gitplex doctor</code></pre>
+          </article>
+          <article>
+            <span>03 BUILD</span>
+            <h3>Check the workspace</h3>
+            <p>Run the Nix-backed build command from the generated workspace, with remote builders disabled.</p>
+<pre><code>gitplex build
+gitplex true-build</code></pre>
+          </article>
+          <article>
+            <span>04 PUSH</span>
+            <h3>Publish intentionally</h3>
+            <p>Only staged workspace files are copied back, committed, and pushed through dependency order.</p>
+<pre><code>git add app-db app-gateway
+gitplex push -m "ship the change"</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="commands" class="section command-lab">
+        <div>
+          <p class="section-index">[ 03 ] /commands</p>
+          <h2>Command surface for cross-repo work.</h2>
+          <p>
+            The CLI covers the day-to-day shape of a coordinated stack: branch, checkout, rebase,
+            cherry-pick, stash, amend, build, diagnose, and push.
+          </p>
+        </div>
+
+        <div class="terminal-card">
+          <div class="terminal-tabs" role="tablist" aria-label="Command examples">
+            <button class="is-active" data-panel="daily" role="tab">daily</button>
+            <button data-panel="repo" role="tab">repo-mode</button>
+            <button data-panel="build" role="tab">build</button>
+          </div>
+<pre class="command-panel is-active" data-panel="daily"><code>$ gitplex branch feature/new-flow
+$ gitplex checkout release/main
+$ gitplex rebase app-gateway release/main
+$ gitplex cherrypick app-db abc1234
+$ gitplex amend --message "tighten schema wiring"</code></pre>
+<pre class="command-panel" data-panel="repo"><code>$ eval "$(gitplex shell-init)"
+$ gitplex workspace-mode
+/Users/you/project/workspace
+
+$ gitplex repo-mode app-gateway
+/Users/you/project/.gitplex/repos/app-gateway</code></pre>
+<pre class="command-panel" data-panel="build"><code>$ gitplex build
+nix build --refresh github:srid/devour-flake#default \
+  --override-input flake . \
+  --option builders ''
+
+$ gitplex true-build
+# same build, plus --option substitute false</code></pre>
+        </div>
+      </section>
+
+      <section id="safety" class="section safety">
+        <div class="section-head">
+          <p class="section-index">[ 04 ] /safety</p>
+          <h2>Designed around the scary parts.</h2>
+          <p>
+            Multi-repo tooling is only useful when it protects the work you did not mean to touch.
+            Gitplex treats generated files, backing clones, and staged intent as separate states.
+          </p>
+        </div>
+
+        <div class="safety-grid">
+          <article>
+            <span>STAGED ONLY</span>
+            <h3>Push what you selected</h3>
+            <p>Unstaged workspace edits are left alone, and a final refresh is skipped when it would overwrite local work.</p>
+          </article>
+          <article>
+            <span>DIRTY CHECKS</span>
+            <h3>Refuse risky rewrites</h3>
+            <p>Checkout, rebase, and workspace regeneration stop when the workspace or selected backing repos are dirty.</p>
+          </article>
+          <article>
+            <span>DEPENDENCIES</span>
+            <h3>Update refs downstream</h3>
+            <p>When dependency repos move, downstream flake inputs and locks can be updated before their commits.</p>
+          </article>
+          <article>
+            <span>BACKING CLONES</span>
+            <h3>Keep escape hatches</h3>
+            <p>Every real repo remains available under .gitplex/repos for inspection, recovery, and manual diagnosis.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="install" class="section install">
+        <div>
+          <p class="section-index">[ 05 ] /install</p>
+          <h2>Install the binary. Bring a manifest.</h2>
+          <p>
+            Current releases ship prebuilt macOS and Linux binaries for amd64 and arm64.
+            The installer fetches the latest GitHub Release by default.
+          </p>
+        </div>
+
+        <div class="install-grid">
+          <article>
+            <span>A / QUICK INSTALL</span>
+            <button class="copy-command compact" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh">
+              <span>$</span>
+              <code>curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh</code>
+              <span class="copy-label">COPY</span>
+            </button>
+            <p>Installs or upgrades to the latest release.</p>
+          </article>
+          <article>
+            <span>B / PIN A VERSION</span>
+            <button class="copy-command compact" data-copy="GITPLEX_VERSION=v0.1.4 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh">
+              <span>$</span>
+              <code>GITPLEX_VERSION=v0.1.4 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh</code>
+              <span class="copy-label">COPY</span>
+            </button>
+            <p>Use a known release for teammate rollouts.</p>
+          </article>
+          <article>
+            <span>C / FIRST RUN</span>
+<pre><code>gitplex init examples/init-demo/manifest.yaml
+gitplex status
+gitplex doctor</code></pre>
+            <p>Start with the included demo manifest, then point Gitplex at your own graph.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <a class="brand" href="#top" aria-label="Gitplex home">
+        <span>git<span>plex</span></span>
+      </a>
+      <p>Generated multi-repo workspaces for Haskell, Nix, and other tightly coupled stacks.</p>
+      <div>
+        <a href="https://github.com/abhishek-yadav-aps/gitplex">GitHub</a>
+        <a href="https://github.com/abhishek-yadav-aps/gitplex/releases">Releases</a>
+        <a href="https://github.com/abhishek-yadav-aps/gitplex/blob/main/README.md">README</a>
+      </div>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
