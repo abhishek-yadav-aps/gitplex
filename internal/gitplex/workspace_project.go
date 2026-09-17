@@ -805,6 +805,9 @@ extra-prog-path: %s
 func writeWorkspaceGitIgnore(workspacePath string, manifest Manifest, state State) error {
 	var b strings.Builder
 	b.WriteString(`dist-newstyle/
+.direnv/
+data/
+log/
 .cabal-dir/*
 !.cabal-dir/
 !.cabal-dir/config
