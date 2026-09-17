@@ -5,3 +5,4 @@ workspace/
 /.direnv/
 .DS_Store
 examples/init-demo/remotes/
+editors/vscode/*.vsix
