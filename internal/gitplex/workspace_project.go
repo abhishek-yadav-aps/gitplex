@@ -126,10 +126,15 @@ executable-dynamic: True
 write-ghc-environment-files: never
 
 -- Number of parallel builds ghc is allowed to do
-jobs: 2
+jobs: 10
 
 -- haskell-flake only parses ` + "`packages`" + ` from ` + "`cabal.project`" + `.
 flags: +Local
+
+package *
+  ghc-options:
+    -j
+    -split-sections
 `)
 	return os.WriteFile(filepath.Join(workspacePath, "cabal.project"), []byte(b.String()), 0o644)
 }
@@ -808,6 +813,7 @@ func writeWorkspaceGitIgnore(workspacePath string, manifest Manifest, state Stat
 .direnv/
 data/
 log/
+/src/app/src/App/Main
 .cabal-dir/*
 !.cabal-dir/
 !.cabal-dir/config
