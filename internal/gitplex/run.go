@@ -13,6 +13,12 @@ func Run(args []string) error {
 	}
 
 	switch args[0] {
+	case "which":
+		path, jsonOutput, err := parseWhichArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return Which(path, jsonOutput)
 	case "init":
 		manifest, err := parseInitArgs(args[1:])
 		if err != nil {
@@ -231,6 +237,7 @@ type commandHelp struct {
 
 var commandHelps = []commandHelp{
 	{"gitplex init <manifest.yaml>", "Clone backing repos from the manifest and create the generated workspace."},
+	{"gitplex which [--json] <path>", "Show a workspace file's source, generation status, and publishing eligibility."},
 	{"gitplex status", "Show workspace changes, repo branches, dirty backing repos, and push readiness."},
 	{"gitplex doctor", "Run preflight checks for tools, manifest graph, workspace sync, and repo state."},
 	{"gitplex pull", "Pull latest changes for backing repos and refresh the generated workspace."},

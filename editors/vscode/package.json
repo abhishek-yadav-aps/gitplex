@@ -1,0 +1,24 @@
+{
+  "name": "gitplex-ownership",
+  "displayName": "Gitplex File Ownership",
+  "description": "Show Gitplex file provenance and publishing eligibility in the status bar.",
+  "version": "0.1.0",
+  "publisher": "gitplex",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "contributes": {
+    "commands": [{ "command": "gitplex.showOwnership", "title": "Gitplex: Show File Ownership" }],
+    "configuration": {
+      "title": "Gitplex",
+      "properties": {
+        "gitplex.executablePath": {
+          "type": "string", "default": "gitplex", "scope": "machine",
+          "description": "Path to the Gitplex binary (must support which --json)."
+        }
+      }
+    }
+  }
+}

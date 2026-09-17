@@ -43,6 +43,8 @@ To publish a Homebrew tap automatically, add the Homebrew cask configuration bac
 
 ## Commands
 
+After initialization, project commands work from any directory inside the project, including nested workspace directories and backing clones. Gitplex searches upward for the nearest `.gitplex/state.json`. `init` creates a project in the current directory.
+
 ```sh
 gitplex init manifest.yaml
 gitplex branch feature/my-change
@@ -125,3 +127,18 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.
 
 Only staged generated-workspace files are pushed. Unstaged workspace edits are preserved locally, and Gitplex skips the final workspace refresh when they are present so it does not overwrite work that was intentionally left unstaged.
+
+## File ownership
+
+From the Gitplex project root:
+
+```sh
+gitplex which workspace/path/File.hs
+gitplex which --json workspace/path/File.hs
+```
+
+Paths are relative to the current directory; absolute paths work too. From inside the workspace, use `gitplex which path/File.hs`.
+
+The report includes the source repo and repo-relative path, the absolute original path, and separate `generated`, `copied`, and `publishable` flags. Module files are copied and publishable. Workspace support files include explicitly configured copies, implicit root files, and discovered local dependencies. Gitplex-created or patched configuration is marked generated. Files without a mapping are marked unmapped. Publishable means covered by the mappings used by `push`/`amend`; staging is still required. A generated file can also be copied or covered by a module mapping.
+
+The optional [VS Code extension](editors/vscode/README.md) shows ownership for the active file in the status bar, with details on hover and click. See its README for launch and packaging instructions.

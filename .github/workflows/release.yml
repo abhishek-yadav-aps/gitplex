@@ -30,6 +30,15 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Package VS Code extension
+        working-directory: editors/vscode
+        run: npx --yes @vscode/vsce@3.6.2 package --no-dependencies --allow-missing-repository --skip-license --out gitplex-ownership.vsix
+
       - name: Release
         uses: goreleaser/goreleaser-action@v6
         with:

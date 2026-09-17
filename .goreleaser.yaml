@@ -2,6 +2,10 @@ version: 2
 
 project_name: gitplex
 
+release:
+  extra_files:
+    - glob: editors/vscode/gitplex-ownership.vsix
+
 before:
   hooks:
     - go mod tidy
