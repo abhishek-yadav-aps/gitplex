@@ -143,11 +143,11 @@ func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([
 	seen := map[string]bool{}
 	queue := make([]WorkspaceFile, 0, len(manifest.WorkspaceFiles))
 	queue = append(queue, manifest.WorkspaceFiles...)
-	envrcFiles, err := implicitWorkspaceEnvrcFiles(manifest, state)
+	rootFiles, err := implicitWorkspaceRootFiles(manifest, state)
 	if err != nil {
 		return nil, err
 	}
-	queue = append(queue, envrcFiles...)
+	queue = append(queue, rootFiles...)
 	var copied []string
 
 	for len(queue) > 0 {
@@ -184,7 +184,7 @@ func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([
 	return copied, nil
 }
 
-func implicitWorkspaceEnvrcFiles(manifest Manifest, state State) ([]WorkspaceFile, error) {
+func implicitWorkspaceRootFiles(manifest Manifest, state State) ([]WorkspaceFile, error) {
 	var files []WorkspaceFile
 	for _, file := range manifest.WorkspaceFiles {
 		if filepath.ToSlash(file.To) != "flake.nix" {
@@ -194,16 +194,18 @@ func implicitWorkspaceEnvrcFiles(manifest Manifest, state State) ([]WorkspaceFil
 		if !ok {
 			return nil, fmt.Errorf("workspace file repo %q is missing from state", file.Repo)
 		}
-		if _, err := os.Stat(filepath.Join(repoState.Path, ".envrc")); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			return nil, err
+		for _, name := range []string{".envrc", "justfile"} {
+			if _, err := os.Stat(filepath.Join(repoState.Path, name)); os.IsNotExist(err) {
+				continue
+			} else if err != nil {
+				return nil, err
+			}
+			files = append(files, WorkspaceFile{
+				Repo: file.Repo,
+				From: name,
+				To:   name,
+			})
 		}
-		files = append(files, WorkspaceFile{
-			Repo: file.Repo,
-			From: ".envrc",
-			To:   ".envrc",
-		})
 	}
 	return files, nil
 }
