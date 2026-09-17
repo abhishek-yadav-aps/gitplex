@@ -125,6 +125,13 @@ func pruneExtraFiles(src, dst string) error {
 }
 
 func dirsDiffer(a, b string) (bool, error) {
+	return dirsDifferIgnoring(a, b, nil)
+}
+
+func dirsDifferIgnoring(a, b string, ignored map[string]bool) (bool, error) {
+	if ignored[filepath.Clean(b)] {
+		return false, nil
+	}
 	aInfo, err := os.Stat(a)
 	if err != nil {
 		return false, err
@@ -159,8 +166,11 @@ func dirsDiffer(a, b string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		seen[rel] = true
 		other := filepath.Join(b, rel)
+		if ignored[filepath.Clean(other)] {
+			return nil
+		}
+		seen[rel] = true
 		same, err := filesEqual(path, other)
 		if err != nil || !same {
 			return errDifferent
@@ -181,6 +191,9 @@ func dirsDiffer(a, b string) (bool, error) {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		if ignored[filepath.Clean(path)] {
 			return nil
 		}
 		rel, err := filepath.Rel(b, path)

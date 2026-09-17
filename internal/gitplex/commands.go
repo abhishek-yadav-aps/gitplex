@@ -29,9 +29,6 @@ func Init(manifestPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureWorkspaceCleanForInit(root); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Join(root, ".gitplex", "repos"), 0o755); err != nil {
 		return err
 	}
@@ -78,28 +75,6 @@ func Init(manifestPath string) error {
 	}
 	fmt.Println("saving gitplex state")
 	return saveState(root, state)
-}
-
-func ensureWorkspaceCleanForInit(root string) error {
-	state, err := loadState(root)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("check workspace changes before init: %w", err)
-	}
-	manifest, err := loadManifest(state.ManifestPath)
-	if err != nil {
-		return fmt.Errorf("check workspace changes before init: %w", err)
-	}
-	changed, err := changedRepos(root, manifest, state)
-	if err != nil {
-		return fmt.Errorf("check workspace changes before init: %w", err)
-	}
-	if len(changed) > 0 {
-		return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before init", changed)
-	}
-	return nil
 }
 
 func checkoutRepoRef(name, repoPath, ref string) error {
@@ -539,7 +514,7 @@ func ShellInit() error {
   case "$1" in
     repo-mode)
       if [ "$#" -eq 2 ]; then
-        gitplex_path="$(command %s "$@")" || return
+        gitplex_path="$(command %s repo-mode --print "$2")" || return
         cd "$gitplex_path"
         return
       fi
@@ -562,13 +537,16 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func RepoMode(repoName string) error {
+func RepoMode(repoName string, printPath bool) error {
 	path, err := RepoModePath(repoName)
 	if err != nil {
 		return err
 	}
-	fmt.Println(path)
-	return nil
+	if printPath {
+		fmt.Println(path)
+		return nil
+	}
+	return runInteractiveShell(path)
 }
 
 func RepoModePath(repoName string) (string, error) {
@@ -589,6 +567,19 @@ func RepoModePath(repoName string) (string, error) {
 		return repoState.Path, nil
 	}
 	return filepath.Join(root, repoState.Path), nil
+}
+
+func runInteractiveShell(dir string) error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func WorkspaceMode(force bool) error {
@@ -1260,10 +1251,22 @@ func workspacePathInModule(path, moduleTo string) (string, bool) {
 func changedRepos(root string, manifest Manifest, state State) ([]string, error) {
 	var changed []string
 	workspacePath := filepath.Join(root, manifest.Workspace)
+	ignored := map[string]bool{}
+	if _, err := os.Stat(filepath.Join(workspacePath, ".git")); err == nil {
+		stdout, stderr, err := gitOutput(workspacePath, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+		if err != nil {
+			return nil, fmt.Errorf("list ignored workspace files: %w: %s", err, strings.TrimSpace(stderr))
+		}
+		for _, path := range strings.Split(stdout, "\x00") {
+			if path != "" {
+				ignored[filepath.Clean(filepath.Join(workspacePath, filepath.FromSlash(path)))] = true
+			}
+		}
+	}
 	for name, repo := range manifest.Repos {
 		repoPath := state.Repos[name].Path
 		for _, module := range repo.Modules {
-			diff, err := dirsDiffer(filepath.Join(repoPath, module.From), filepath.Join(workspacePath, module.To))
+			diff, err := dirsDifferIgnoring(filepath.Join(repoPath, module.From), filepath.Join(workspacePath, module.To), ignored)
 			if err != nil {
 				return nil, err
 			}

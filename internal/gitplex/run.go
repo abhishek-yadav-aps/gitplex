@@ -43,11 +43,11 @@ func Run(args []string) error {
 		}
 		return ShellInit()
 	case "repo-mode":
-		repo, err := parseRepoModeArgs(args[1:])
+		repo, printPath, err := parseRepoModeArgs(args[1:])
 		if err != nil {
 			return err
 		}
-		return RepoMode(repo)
+		return RepoMode(repo, printPath)
 	case "workspace-mode":
 		force, err := parseWorkspaceModeArgs(args[1:])
 		if err != nil {
@@ -130,11 +130,24 @@ func parseShellInitArgs(args []string) error {
 	return nil
 }
 
-func parseRepoModeArgs(args []string) (string, error) {
-	if len(args) != 1 {
-		return "", fmt.Errorf("usage: gitplex repo-mode <repo>")
+func parseRepoModeArgs(args []string) (string, bool, error) {
+	var repo string
+	printPath := false
+	for _, arg := range args {
+		switch arg {
+		case "--print", "-p":
+			printPath = true
+		default:
+			if repo != "" {
+				return "", false, fmt.Errorf("usage: gitplex repo-mode [--print] <repo>")
+			}
+			repo = arg
+		}
 	}
-	return args[0], nil
+	if repo == "" {
+		return "", false, fmt.Errorf("usage: gitplex repo-mode [--print] <repo>")
+	}
+	return repo, printPath, nil
 }
 
 func parseWorkspaceModeArgs(args []string) (bool, error) {
@@ -225,7 +238,7 @@ var commandHelps = []commandHelp{
 	{"gitplex build", "Run the normal workspace build command."},
 	{"gitplex true-build", "Run the stricter build command for the generated workspace."},
 	{"gitplex shell-init", "Print shell helper functions for easier Gitplex navigation commands."},
-	{"gitplex repo-mode <repo>", "Print the backing clone path for one repo under .gitplex/repos."},
+	{"gitplex repo-mode [--print] <repo>", "Open a shell in one backing repo, or print its path with --print."},
 	{"gitplex workspace-mode [--force]", "Rebuild the generated workspace from existing backing clones and print its path."},
 	{"gitplex checkout [repo] <branch>", "Checkout one repo or all repos to a branch, then refresh the workspace."},
 	{"gitplex rebase [repo] <branch>", "Rebase one repo or all repos onto origin/<branch>, then refresh the workspace."},

@@ -162,7 +162,61 @@ func TestInitAddsLocalFlakeInputsForMergedRepoDependencies(t *testing.T) {
 	}
 }
 
-func TestInitRefusesDirtyWorkspace(t *testing.T) {
+func TestInitIgnoresGitIgnoredWorkspaceFiles(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	if err := os.WriteFile(filepath.Join(workspace, "app", ".gitignore"), []byte(".hie/\n*.tmp\n!keep.tmp\nREADME.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, workspace, "add", "app/.gitignore")
+	gitTest(t, workspace, "commit", "-m", "ignore artifacts")
+	// Match the nested ignore file on both sides so only artifacts differ.
+	if err := os.WriteFile(filepath.Join(root, ".gitplex", "repos", "app", "src", ".gitignore"), []byte(".hie/\n*.tmp\n!keep.tmp\nREADME.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "app", ".hie"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".hie/cache", "artifact.tmp"} {
+		if err := os.WriteFile(filepath.Join(workspace, "app", path), []byte("artifact"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest, state := loadProjectForTest(t, root)
+	changed, err := changedRepos(root, manifest, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("changed repos = %v, want none for ignored artifacts", changed)
+	}
+	for _, path := range []string{"keep.tmp", "README.md"} {
+		if err := os.WriteFile(filepath.Join(workspace, "app", path), []byte("edit"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := changedRepos(root, manifest, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changed) == 0 {
+			t.Fatalf("change to %s was not detected", path)
+		}
+		if path == "keep.tmp" {
+			if err := os.Remove(filepath.Join(workspace, "app", path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestInitRefreshesDirtyWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
 	chdir(t, root)
@@ -177,20 +231,15 @@ func TestInitRefusesDirtyWorkspace(t *testing.T) {
 	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := Init(manifestPath)
-	if err == nil {
-		t.Fatal("init succeeded with dirty workspace")
-	}
-	want := "workspace has local changes in [app]; run gitplex push or discard them before init"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init with dirty workspace: %v", err)
 	}
 	content, readErr := os.ReadFile(workspaceFile)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(content) != "workspace edit\n" {
-		t.Fatalf("workspace content = %q, want dirty edit preserved", content)
+	if string(content) != "main src\n" {
+		t.Fatalf("workspace content = %q, want refreshed content", content)
 	}
 }
 
@@ -1147,8 +1196,7 @@ func TestShellInitPrintsRepoModeWrapper(t *testing.T) {
 	for _, want := range []string{
 		"gitplex() {",
 		`repo-mode)`,
-		`gitplex_path="$(command `,
-		` "$@")" || return`,
+		`repo-mode --print "$2")" || return`,
 		`cd "$gitplex_path"`,
 		`command `,
 	} {
@@ -1346,16 +1394,30 @@ func TestParseWorkspaceModeArgs(t *testing.T) {
 }
 
 func TestParseRepoModeArgs(t *testing.T) {
-	repo, err := parseRepoModeArgs([]string{"app"})
+	repo, printPath, err := parseRepoModeArgs([]string{"app"})
 	if err != nil {
 		t.Fatalf("parse repo-mode: %v", err)
 	}
 	if repo != "app" {
 		t.Fatalf("repo = %q, want app", repo)
 	}
+	if printPath {
+		t.Fatal("printPath = true, want false")
+	}
+
+	repo, printPath, err = parseRepoModeArgs([]string{"--print", "app"})
+	if err != nil {
+		t.Fatalf("parse repo-mode --print: %v", err)
+	}
+	if repo != "app" {
+		t.Fatalf("repo = %q, want app", repo)
+	}
+	if !printPath {
+		t.Fatal("printPath = false, want true")
+	}
 
 	for _, args := range [][]string{nil, []string{"app", "extra"}} {
-		if _, err := parseRepoModeArgs(args); err == nil {
+		if _, _, err := parseRepoModeArgs(args); err == nil {
 			t.Fatalf("parseRepoModeArgs(%v) succeeded, want usage error", args)
 		}
 	}
