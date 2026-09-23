@@ -12,7 +12,12 @@ import (
 type Manifest struct {
 	Workspace      string                `yaml:"workspace"`
 	WorkspaceFiles []WorkspaceFile       `yaml:"workspace_files"`
+	Build          BuildConfig           `yaml:"build"`
 	Repos          map[string]RepoConfig `yaml:"repos"`
+}
+
+type BuildConfig struct {
+	CachePushCommand []string `yaml:"cache_push_command"`
 }
 
 type RepoConfig struct {
@@ -52,6 +57,13 @@ func loadManifest(path string) (Manifest, error) {
 	}
 	if len(manifest.Repos) == 0 {
 		return Manifest{}, fmt.Errorf("manifest must contain at least one repo")
+	}
+	if len(manifest.Build.CachePushCommand) > 0 {
+		for i, part := range manifest.Build.CachePushCommand {
+			if strings.TrimSpace(part) == "" {
+				return Manifest{}, fmt.Errorf("build cache_push_command[%d] must not be empty", i)
+			}
+		}
 	}
 	for name, repo := range manifest.Repos {
 		if repo.URL == "" {
