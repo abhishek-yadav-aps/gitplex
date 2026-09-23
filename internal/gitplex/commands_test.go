@@ -622,9 +622,70 @@ func TestBuildRunsNixBuildInWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := "build\n--refresh\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n"
+	wantArgs := "build\n"
 	if string(args) != wantArgs {
 		t.Fatalf("nix args = %q, want %q", args, wantArgs)
+	}
+}
+
+func TestBuildRunsConfiguredCachePushAfterSuccess(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependRecordingFakeNix(t, root)
+	cacheCwdLog, cacheArgsLog := prependRecordingFakeCommand(t, root, "cache-push")
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithCachePush(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	cwd, err := os.ReadFile(cacheCwdLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorkspace, err := filepath.EvalSymlinks(filepath.Join(root, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCwd := wantWorkspace + "\n"
+	if string(cwd) != wantCwd {
+		t.Fatalf("cache push cwd = %q, want %q", cwd, wantCwd)
+	}
+
+	args, err := os.ReadFile(cacheArgsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "push\nexample-cache\n./result\n"
+	if string(args) != wantArgs {
+		t.Fatalf("cache push args = %q, want %q", args, wantArgs)
+	}
+}
+
+func TestBuildDoesNotRunConfiguredCachePushWhenBuildFails(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependFailingFakeNix(t, root)
+	cacheCwdLog, _ := prependRecordingFakeCommand(t, root, "cache-push")
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithCachePush(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Build(); err == nil {
+		t.Fatal("build succeeded with failing nix")
+	}
+	if _, err := os.Stat(cacheCwdLog); !os.IsNotExist(err) {
+		t.Fatalf("cache push ran after failed build, stat err = %v", err)
 	}
 }
 
@@ -661,7 +722,7 @@ func TestTrueBuildRunsNixBuildWithoutSubstitutesInWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := "build\n--refresh\ngithub:srid/devour-flake#default\n-L\n--print-out-paths\n--no-write-lock-file\n--override-input\nflake\n.\n--out-link\n./result\n--option\nbuilders\n\n--option\nsubstitute\nfalse\n"
+	wantArgs := "build\n--option\nsubstitute\nfalse\n"
 	if string(args) != wantArgs {
 		t.Fatalf("nix args = %q, want %q", args, wantArgs)
 	}
@@ -1619,6 +1680,47 @@ exit 0
 	return cwdLog, argsLog
 }
 
+func prependFailingFakeNix(t *testing.T, root string) {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nixPath := filepath.Join(binDir, "nix")
+	script := `#!/bin/sh
+echo "build failed" >&2
+exit 1
+`
+	if err := os.WriteFile(nixPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func prependRecordingFakeCommand(t *testing.T, root, name string) (string, string) {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwdLog := filepath.Join(root, name+"-cwd.log")
+	argsLog := filepath.Join(root, name+"-args.log")
+	commandPath := filepath.Join(binDir, name)
+	script := `#!/bin/sh
+printf '%s\n' "$PWD" > "` + cwdLog + `"
+: > "` + argsLog + `"
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "` + argsLog + `"
+done
+exit 0
+`
+	if err := os.WriteFile(commandPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return cwdLog, argsLog
+}
+
 func addRemoteCommit(t *testing.T, repo, readmeContent string) string {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(readmeContent), 0o644); err != nil {
@@ -1673,6 +1775,14 @@ func loadProjectForTest(t *testing.T, root string) (Manifest, State) {
 func writeManifest(t *testing.T, path, remote, ref string) {
 	t.Helper()
 	data := []byte("workspace: workspace\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeManifestWithCachePush(t *testing.T, path, remote, ref string) {
+	t.Helper()
+	data := []byte("workspace: workspace\nbuild:\n  cache_push_command:\n    - cache-push\n    - push\n    - example-cache\n    - ./result\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

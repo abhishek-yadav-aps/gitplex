@@ -76,8 +76,23 @@ See [examples/init-demo/manifest.yaml](examples/init-demo/manifest.yaml).
 The manifest has three main parts:
 
 - `workspace`: where the merged working tree should be created
+- `build`: optional build-time configuration, such as a post-build cache push command
 - `repos`: the backing repositories, their refs, their module mappings, and dependency order
 - `workspace_files`: optional root-level files or directories to copy into the merged workspace from one of the backing repos
+
+To push successful build outputs to an external cache, configure a command array under `build.cache_push_command`:
+
+```yaml
+workspace: workspace
+build:
+  cache_push_command:
+    - attic
+    - push
+    - chutney:juspay
+    - ./result
+```
+
+`gitplex build` runs this command inside the generated workspace only after the Nix build succeeds. `gitplex true-build` does not run the cache push command.
 
 `gitplex` always generates a merged `cabal.project` by scanning for `.cabal` files inside the workspace. That keeps the package list generic.
 
@@ -114,9 +129,9 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 
 `gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
 
-`gitplex build` runs `nix build --refresh github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders ''` inside the generated workspace.
+`gitplex build` runs `nix build` inside the generated workspace. If `build.cache_push_command` is configured in the manifest, Gitplex runs that command in the workspace after the build succeeds.
 
-`gitplex true-build` runs `nix build --refresh github:srid/devour-flake#default -L --print-out-paths --no-write-lock-file --override-input flake . --out-link ./result --option builders '' --option substitute false` inside the generated workspace.
+`gitplex true-build` runs `nix build --option substitute false` inside the generated workspace.
 
 `gitplex shell-init` prints a zsh/bash-compatible shell function. Add `eval "$(gitplex shell-init)"` to your shell session or shell startup file to make `gitplex repo-mode <repo>` and `gitplex workspace-mode` change your current terminal directory directly. Use `gitplex repo-mode --print <repo>` if you need the raw backing clone path for scripts.
 

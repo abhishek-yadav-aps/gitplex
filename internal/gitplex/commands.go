@@ -313,14 +313,14 @@ func Stash(args []string) error {
 }
 
 func Build() error {
-	return runWorkspaceNixBuild(false)
+	return runWorkspaceNixBuild(false, true)
 }
 
 func TrueBuild() error {
-	return runWorkspaceNixBuild(true)
+	return runWorkspaceNixBuild(true, false)
 }
 
-func runWorkspaceNixBuild(disableSubstitutes bool) error {
+func runWorkspaceNixBuild(disableSubstitutes, runCachePush bool) error {
 	root, manifest, _, err := loadProject()
 	if err != nil {
 		return err
@@ -328,24 +328,24 @@ func runWorkspaceNixBuild(disableSubstitutes bool) error {
 	workspacePath := filepath.Join(root, manifest.Workspace)
 	args := []string{
 		"build",
-		"--refresh",
-		"github:srid/devour-flake#default",
-		"-L",
-		"--print-out-paths",
-		"--no-write-lock-file",
-		"--override-input",
-		"flake",
-		".",
-		"--out-link",
-		"./result",
-		"--option",
-		"builders",
-		"",
 	}
 	if disableSubstitutes {
 		args = append(args, "--option", "substitute", "false")
 	}
-	return runCommandAndPrint(workspacePath, "nix", args...)
+	if err := runCommandAndPrint(workspacePath, "nix", args...); err != nil {
+		return err
+	}
+	if runCachePush {
+		return runBuildCachePushCommand(workspacePath, manifest.Build.CachePushCommand)
+	}
+	return nil
+}
+
+func runBuildCachePushCommand(workspacePath string, command []string) error {
+	if len(command) == 0 {
+		return nil
+	}
+	return runCommandAndPrint(workspacePath, command[0], command[1:]...)
 }
 
 func Rebase(repoName, branch string) error {

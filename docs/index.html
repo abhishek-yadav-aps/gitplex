@@ -228,12 +228,11 @@ $ gitplex workspace-mode
 $ gitplex repo-mode app-gateway
 /Users/you/project/.gitplex/repos/app-gateway</code></pre>
 <pre class="command-panel" data-panel="build"><code>$ gitplex build
-nix build --refresh github:srid/devour-flake#default \
-  --override-input flake . \
-  --option builders ''
+nix build
+# then runs build.cache_push_command when configured
 
 $ gitplex true-build
-# same build, plus --option substitute false</code></pre>
+# nix build --option substitute false</code></pre>
         </div>
       </section>
 
