@@ -1424,6 +1424,103 @@ func TestWorkspaceModePrintsOnlyWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestFindProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(statePath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(root, State{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{".", "workspace", "workspace/app/src", ".gitplex/repos/app/src"} {
+		t.Run(relative, func(t *testing.T) {
+			start := filepath.Join(root, relative)
+			if err := os.MkdirAll(start, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			got, err := findProjectRoot(start)
+			if err != nil || got != root {
+				t.Fatalf("findProjectRoot(%q) = %q, %v; want %q", start, got, err, root)
+			}
+		})
+	}
+	// An embedded project takes precedence over its enclosing project.
+	nested := filepath.Join(root, "workspace", "nested")
+	if err := os.MkdirAll(filepath.Dir(statePath(nested)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(nested, State{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findProjectRoot(filepath.Join(nested, ".gitplex"))
+	if err != nil || got != nested {
+		t.Fatalf("nested project root = %q, %v; want %q", got, err, nested)
+	}
+}
+
+func TestFindProjectRootWithoutState(t *testing.T) {
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	if _, err := os.Stat(statePath(root)); !os.IsNotExist(err) {
+		t.Skip("filesystem root has project state or is inaccessible")
+	}
+	if _, err := findProjectRoot(root); !os.IsNotExist(err) {
+		t.Fatalf("findProjectRoot without state: %v, want not-exist error", err)
+	}
+}
+
+func TestWorkspaceModeWorksFromBackingRepoDirectory(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	chdir(t, filepath.Join(root, ".gitplex", "repos", "app"))
+	path, err := WorkspaceModePath(false)
+	if err != nil {
+		t.Fatalf("workspace-mode from backing repo: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cwd, "..", "..", "..", "workspace")
+	want = filepath.Clean(want)
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+func TestWorkspaceModeWorksFromGeneratedWorkspaceDirectory(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeSrcManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	chdir(t, filepath.Join(root, "workspace"))
+	path, err := WorkspaceModePath(false)
+	if err != nil {
+		t.Fatalf("workspace-mode from generated workspace: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cwd
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
 func TestParseWorkspaceModeArgs(t *testing.T) {
 	force, err := parseWorkspaceModeArgs(nil)
 	if err != nil {

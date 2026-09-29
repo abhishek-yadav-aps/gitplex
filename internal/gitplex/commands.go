@@ -1144,7 +1144,11 @@ func branchDisplay(state State) string {
 }
 
 func loadProject() (string, Manifest, State, error) {
-	root, err := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", Manifest{}, State{}, err
+	}
+	root, err := findProjectRoot(cwd)
 	if err != nil {
 		return "", Manifest{}, State{}, err
 	}
@@ -1157,6 +1161,22 @@ func loadProject() (string, Manifest, State, error) {
 		return "", Manifest{}, State{}, err
 	}
 	return root, manifest, state, nil
+}
+
+func findProjectRoot(start string) (string, error) {
+	dir := start
+	for {
+		if _, err := os.Stat(statePath(dir)); err == nil {
+			return dir, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", os.ErrNotExist
+		}
+		dir = parent
+	}
 }
 
 func refreshWorkspace(root string, manifest Manifest, state State) error {
