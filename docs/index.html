@@ -9,7 +9,7 @@
       content="Gitplex creates a generated multi-repo workspace while keeping every backing repository separate, clean, and publishable."
     >
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f4f1e8'/%3E%3Cpath d='M7 8h18v4H11v8h14v4H7z' fill='%230d1117'/%3E%3Cpath d='M13 14h12v4H13z' fill='%23b85c18'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="styles.css?v=20260915-overlap2">
+    <link rel="stylesheet" href="styles.css?v=20260929-workflows">
   </head>
   <body>
     <header class="topbar">
@@ -29,19 +29,19 @@
     <main id="top">
       <section class="hero grid-section" aria-labelledby="hero-title">
         <div class="release-strip">
-          <a href="https://github.com/abhishek-yadav-aps/gitplex/releases/tag/v0.1.4">latest release v0.1.4</a>
+          <a href="https://github.com/abhishek-yadav-aps/gitplex/releases/tag/v0.1.12">latest stable v0.1.12 / planning + recovery workflows now on main</a>
         </div>
 
         <div class="hero-frame">
           <div class="hero-copy">
-            <p class="kicker">GITPLEX V0.1.4 / MULTI-REPO WORKSPACE CLI / GO BINARY</p>
-            <p class="comment">// edit one generated tree. publish many repos.</p>
+            <p class="kicker">GITPLEX / MULTI-REPO WORKSPACE CLI / GO BINARY</p>
+            <p class="comment">// edit together. inspect the graph. publish with recovery.</p>
             <h1 id="hero-title">One workspace for repos that ship together.</h1>
             <p class="lede">
               Gitplex builds a combined working directory for tightly coupled repositories.
               The editable view lives in <strong>workspace</strong>; the real clones stay in
-              <strong>.gitplex/repos</strong>. You stage once, push in dependency order, and keep
-              local experiments out of published commits.
+              <strong>.gitplex/repos</strong>. Preview the exact publish plan, commit and push
+              together or separately, verify remote refs, and recover interrupted operations.
             </p>
 
             <button class="copy-command" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh">
@@ -69,8 +69,8 @@
             </div>
             <div>
               <dt>PUSH MODEL</dt>
-              <dd>staged only</dd>
-              <p>unstaged workspace edits stay local</p>
+              <dd>planned + staged</dd>
+              <p>preview files, branches, cascade, and order before publishing</p>
             </div>
             <div>
               <dt>BUILD PATH</dt>
@@ -84,8 +84,8 @@
             </div>
             <div>
               <dt>RUNTIME</dt>
-              <dd>Go CLI</dd>
-              <p>one command surface for repo choreography</p>
+              <dd>recoverable</dd>
+              <p>durable journals for publishing and conflict workflows</p>
             </div>
           </dl>
         </div>
@@ -105,21 +105,20 @@
               </ul>
             </div>
             <div class="mock-code" aria-label="Example command output">
-<pre><code>$ gitplex doctor
-[OK] manifest graph is valid
-[OK] workspace matches selected repos
-[OK] app-db upstream readable
-[OK] app-gateway upstream readable
+<pre><code>$ gitplex push --dry-run
+staged files: 2
+  app-db/src/Schema.hs
+  app-gateway/src/Api.hs
+execution order:
+  1. app-db -&gt; origin/feature/credit
+  2. app-gateway -&gt; origin/feature/credit
+     dependency cascade
 
-$ git diff --cached --name-only
-app-db/src/Schema.hs
-app-gateway/src/Api.hs
+$ gitplex commit -m "wire new credit path"
+commits prepared; run gitplex push
 
-$ gitplex push --message "wire new credit path"
-commit app-db      9f31c80
-update app-gateway input app-db
-commit app-gateway 77a624d
-push dependency order complete</code></pre>
+$ gitplex push
+remote refs verified / publish complete</code></pre>
             </div>
           </div>
         </div>
@@ -146,7 +145,7 @@ push dependency order complete</code></pre>
           </div>
           <div role="row">
             <span role="cell">manually update dependency refs</span>
-            <span role="cell">push updates in graph order</span>
+            <span role="cell">preview and publish in graph order</span>
           </div>
           <div role="row">
             <span role="cell">risk publishing scratch edits</span>
@@ -155,6 +154,10 @@ push dependency order complete</code></pre>
           <div role="row">
             <span role="cell">recreate shell context</span>
             <span role="cell">jump with workspace-mode and repo-mode</span>
+          </div>
+          <div role="row">
+            <span role="cell">restart failed Git operations by hand</span>
+            <span role="cell">continue or abort from a durable journal</span>
           </div>
         </div>
       </section>
@@ -173,30 +176,34 @@ push dependency order complete</code></pre>
           <article>
             <span>01 INIT</span>
             <h3>Clone the graph</h3>
-            <p>Read a manifest, clone each repo, map modules into the generated workspace, and create the baseline.</p>
-<pre><code>gitplex init manifest.yaml</code></pre>
+            <p>Strictly validate fields, paths, mappings, and dependency cycles before creating the workspace.</p>
+<pre><code>gitplex validate manifest.yaml
+gitplex init manifest.yaml</code></pre>
           </article>
           <article>
             <span>02 CHANGE</span>
             <h3>Edit together</h3>
-            <p>Use the workspace for cross-package edits while backing clones remain under Gitplex control.</p>
-<pre><code>gitplex status
-gitplex doctor</code></pre>
+            <p>Inspect ownership, repository-scoped diffs, merged history, status, and affected dependents.</p>
+<pre><code>gitplex status --json
+gitplex diff --staged
+gitplex log --limit 20</code></pre>
           </article>
           <article>
-            <span>03 BUILD</span>
-            <h3>Check the workspace</h3>
-            <p>Run the Nix-backed build command from the generated workspace, with remote builders disabled.</p>
-<pre><code>gitplex build
-gitplex true-build</code></pre>
+            <span>03 PLAN</span>
+            <h3>Plan the graph</h3>
+            <p>See dependency edges, calculate the downstream cascade, and preview the exact publish order.</p>
+<pre><code>gitplex graph
+gitplex affected
+gitplex push --dry-run</code></pre>
           </article>
           <article>
             <span>04 PUSH</span>
             <h3>Publish intentionally</h3>
-            <p>Only staged workspace files are copied back, journaled, remotely verified, and pushed through dependency order.</p>
+            <p>Commit and push together or separately. Every phase is journaled and every pushed remote ref is verified.</p>
 <pre><code>git add app-db app-gateway
-gitplex push -m "ship the change"
-# after a rejected or interrupted push:
+gitplex commit -m "ship the change"
+gitplex push
+# after a rejected push:
 gitplex push --resume</code></pre>
           </article>
         </div>
@@ -207,34 +214,55 @@ gitplex push --resume</code></pre>
           <p class="section-index">[ 03 ] /commands</p>
           <h2>Command surface for cross-repo work.</h2>
           <p>
-            The CLI covers the day-to-day shape of a coordinated stack: branch, checkout, rebase,
-            cherry-pick, stash, amend, build, diagnose, and push.
+            The CLI covers the full coordinated workflow: inspect, validate, plan, build, commit,
+            publish, verify, and recover across repository boundaries.
           </p>
         </div>
 
         <div class="terminal-card">
           <div class="terminal-tabs" role="tablist" aria-label="Command examples">
-            <button class="is-active" data-panel="daily" role="tab">daily</button>
-            <button data-panel="repo" role="tab">repo-mode</button>
-            <button data-panel="build" role="tab">build</button>
+            <button id="tab-inspect" class="is-active" data-panel="inspect" role="tab" aria-controls="panel-inspect" aria-selected="true">inspect</button>
+            <button id="tab-graph" data-panel="graph" role="tab" aria-controls="panel-graph" aria-selected="false">graph</button>
+            <button id="tab-publish" data-panel="publish" role="tab" aria-controls="panel-publish" aria-selected="false">publish</button>
+            <button id="tab-recover" data-panel="recover" role="tab" aria-controls="panel-recover" aria-selected="false">recover</button>
+            <button id="tab-build" data-panel="build" role="tab" aria-controls="panel-build" aria-selected="false">build</button>
+            <button id="tab-navigate" data-panel="navigate" role="tab" aria-controls="panel-navigate" aria-selected="false">navigate</button>
           </div>
-<pre class="command-panel is-active" data-panel="daily"><code>$ gitplex branch feature/new-flow
-$ gitplex checkout release/main
-$ gitplex rebase app-gateway release/main
-$ gitplex cherrypick app-db abc1234
-$ gitplex amend --message "tighten schema wiring"</code></pre>
-<pre class="command-panel" data-panel="repo"><code>$ eval "$(gitplex shell-init)"
+<pre id="panel-inspect" class="command-panel is-active" data-panel="inspect" role="tabpanel" aria-labelledby="tab-inspect"><code>$ gitplex validate
+$ gitplex status --json
+$ gitplex diff app-gateway --staged
+$ gitplex log --limit 20
+$ gitplex log app-db --json</code></pre>
+<pre id="panel-graph" class="command-panel" data-panel="graph" role="tabpanel" aria-labelledby="tab-graph"><code>$ gitplex graph
+execution order: app-db -&gt; app-gateway -&gt; app-service
+
+$ gitplex affected app-db
+direct: app-db
+dependency cascade: app-gateway -&gt; app-service</code></pre>
+<pre id="panel-publish" class="command-panel" data-panel="publish" role="tabpanel" aria-labelledby="tab-publish"><code>$ gitplex push --dry-run
+$ gitplex commit -m "tighten schema wiring"
+$ gitplex push
+
+# or keep the combined workflow
+$ gitplex push -m "tighten schema wiring"</code></pre>
+<pre id="panel-recover" class="command-panel" data-panel="recover" role="tabpanel" aria-labelledby="tab-recover"><code>$ gitplex push --resume
+
+$ gitplex rebase --continue
+$ gitplex rebase --abort
+
+$ gitplex cherrypick --continue
+$ gitplex cherrypick --abort</code></pre>
+<pre id="panel-build" class="command-panel" data-panel="build" role="tabpanel" aria-labelledby="tab-build"><code>$ gitplex build
+# nix build, then optional cache push
+
+$ gitplex true-build
+# nix build --option substitute false</code></pre>
+<pre id="panel-navigate" class="command-panel" data-panel="navigate" role="tabpanel" aria-labelledby="tab-navigate"><code>$ eval "$(gitplex shell-init)"
 $ gitplex workspace-mode
 /Users/you/project/workspace
 
 $ gitplex repo-mode app-gateway
 /Users/you/project/.gitplex/repos/app-gateway</code></pre>
-<pre class="command-panel" data-panel="build"><code>$ gitplex build
-nix build
-# then runs build.cache_push_command when configured
-
-$ gitplex true-build
-# nix build --option substitute false</code></pre>
         </div>
       </section>
 
@@ -269,6 +297,26 @@ $ gitplex true-build
             <h3>Keep escape hatches</h3>
             <p>Every real repo remains available under .gitplex/repos for inspection, recovery, and manual diagnosis.</p>
           </article>
+          <article>
+            <span>STRICT VALIDATION</span>
+            <h3>Reject unsafe manifests</h3>
+            <p>Unknown fields, reserved paths, overlapping mappings, invalid dependencies, and graph cycles fail early.</p>
+          </article>
+          <article>
+            <span>DURABLE JOURNALS</span>
+            <h3>Resume exact operations</h3>
+            <p>Per-repository publish phases preserve planned, committed, pushed, failed, and skipped state.</p>
+          </article>
+          <article>
+            <span>REMOTE VERIFICATION</span>
+            <h3>Prove the push landed</h3>
+            <p>State advances only after the remote branch is confirmed at the journaled commit.</p>
+          </article>
+          <article>
+            <span>CONFLICT RECOVERY</span>
+            <h3>Continue or roll back</h3>
+            <p>Rebase and cherry-pick conflicts can continue after resolution or restore all touched repository heads.</p>
+          </article>
         </div>
       </section>
 
@@ -277,8 +325,8 @@ $ gitplex true-build
           <p class="section-index">[ 05 ] /install</p>
           <h2>Install the binary. Bring a manifest.</h2>
           <p>
-            Current releases ship prebuilt macOS and Linux binaries for amd64 and arm64.
-            The installer fetches the latest GitHub Release by default.
+            Stable release v0.1.12 ships prebuilt macOS and Linux binaries for amd64 and arm64.
+            Planning and recovery commands are currently available on main and will ship in the next release.
           </p>
         </div>
 
@@ -294,9 +342,9 @@ $ gitplex true-build
           </article>
           <article>
             <span>B / PIN A VERSION</span>
-            <button class="copy-command compact" data-copy="GITPLEX_VERSION=v0.1.4 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh">
+            <button class="copy-command compact" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.12 sh">
               <span>$</span>
-              <code>GITPLEX_VERSION=v0.1.4 curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | sh</code>
+              <code>curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.12 sh</code>
               <span class="copy-label">COPY</span>
             </button>
             <p>Use a known release for teammate rollouts.</p>
