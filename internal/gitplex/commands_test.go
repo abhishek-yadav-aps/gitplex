@@ -39,6 +39,214 @@ func TestInitFetchesChangedManifestBranchForExistingClone(t *testing.T) {
 	}
 }
 
+func TestCommitPreparesAndPushPublishesJournaledCommit(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	branch := "test/gitplex-separate-commit"
+	if err := Branch(branch); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	if err := os.WriteFile(filepath.Join(workspace, "app", "README.md"), []byte("prepared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, workspace, "add", "app/README.md")
+	before := gitTest(t, filepath.Join(root, ".gitplex", "repos", "app"), "rev-parse", "HEAD")
+	emptyHooks := filepath.Join(root, "empty-hooks")
+	if err := os.MkdirAll(emptyHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Join(root, ".gitplex", "repos", "app"), "config", "core.hooksPath", emptyHooks)
+	if err := Commit("prepare only"); err != nil {
+		t.Fatal(err)
+	}
+	after := gitTest(t, filepath.Join(root, ".gitplex", "repos", "app"), "rev-parse", "HEAD")
+	if after == before {
+		t.Fatal("commit did not advance backing repo HEAD")
+	}
+	if out, _, err := gitOutput(remote, "show-ref", "--verify", "refs/heads/"+branch); err == nil || out != "" {
+		t.Fatalf("remote branch exists before push: %q", out)
+	}
+	journal, err := loadPushJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if journal.Repos["app"].Phase != pushPhaseCommitted {
+		t.Fatalf("phase = %q, want committed", journal.Repos["app"].Phase)
+	}
+	if err := Push("ignored for prepared journal"); err != nil {
+		t.Fatal(err)
+	}
+	remoteHead := gitTest(t, remote, "rev-parse", "refs/heads/"+branch)
+	if remoteHead != after {
+		t.Fatalf("remote head = %s, want %s", remoteHead, after)
+	}
+	if _, err := os.Stat(pushJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("push journal remains after publish: %v", err)
+	}
+}
+
+func TestPushDryRunDoesNotMutateRepositories(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Branch("test/gitplex-dry-run"); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	if err := os.WriteFile(filepath.Join(workspace, "app", "README.md"), []byte("planned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, workspace, "add", "app/README.md")
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	before := gitTest(t, repoPath, "rev-parse", "HEAD")
+	if err := PushDryRun(false); err != nil {
+		t.Fatal(err)
+	}
+	if after := gitTest(t, repoPath, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("dry-run changed HEAD from %s to %s", before, after)
+	}
+	if _, err := os.Stat(pushJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created a journal: %v", err)
+	}
+}
+
+func TestLoadManifestRejectsUnknownAndUnsafeMappings(t *testing.T) {
+	for name, content := range map[string]string{
+		"unknown field": "workspace: workspace\nunknown: true\nrepos:\n  app:\n    url: example\n    modules:\n      - from: .\n        to: app\n",
+		"reserved path": "workspace: .gitplex/workspace\nrepos:\n  app:\n    url: example\n    modules:\n      - from: .\n        to: app\n",
+		"overlap":       "workspace: workspace\nrepos:\n  app:\n    url: example\n    modules:\n      - from: one\n        to: src\n  lib:\n    url: example\n    modules:\n      - from: two\n        to: src/nested\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "manifest.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadManifest(path); err == nil {
+				t.Fatal("unsafe manifest was accepted")
+			}
+		})
+	}
+}
+
+func TestCherryPickConflictCanContinue(t *testing.T) {
+	remote, commit := seedCherryPickConflict(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := CherryPick("app", commit); err == nil || !strings.Contains(err.Error(), "--continue") {
+		t.Fatalf("cherrypick conflict = %v, want recovery instructions", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "add", "README.md")
+	if err := ContinueConflict("cherry-pick"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(conflictJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("conflict journal remains: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "workspace", "app", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "resolved\n" {
+		t.Fatalf("workspace content = %q", content)
+	}
+}
+
+func TestCherryPickConflictCanAbort(t *testing.T) {
+	remote, commit := seedCherryPickConflict(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	original := gitTest(t, repoPath, "rev-parse", "HEAD")
+	if err := CherryPick("app", commit); err == nil {
+		t.Fatal("cherrypick unexpectedly succeeded")
+	}
+	if err := AbortConflict("cherry-pick"); err != nil {
+		t.Fatal(err)
+	}
+	if head := gitTest(t, repoPath, "rev-parse", "HEAD"); head != original {
+		t.Fatalf("head = %s, want %s", head, original)
+	}
+	if status := gitTest(t, repoPath, "status", "--porcelain"); status != "" {
+		t.Fatalf("repo remains dirty: %s", status)
+	}
+}
+
+func TestRebaseConflictCanContinue(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	commitBackingRepoChange(t, root, "app", "local\n", "local change")
+	if err := Rebase("app", "release-sandbox"); err == nil || !strings.Contains(err.Error(), "rebase --continue") {
+		t.Fatalf("rebase conflict = %v, want recovery instructions", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("rebased\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "add", "README.md")
+	if err := ContinueConflict("rebase"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "workspace", "app", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "rebased\n" {
+		t.Fatalf("workspace content = %q", content)
+	}
+	if _, err := os.Stat(conflictJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("conflict journal remains: %v", err)
+	}
+}
+
+func seedCherryPickConflict(t *testing.T) (string, string) {
+	t.Helper()
+	repo := seedRemoteRepo(t)
+	gitTest(t, repo, "checkout", "-b", "conflict-source", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "commit", "-am", "source change")
+	commit := gitTest(t, repo, "rev-parse", "HEAD")
+	gitTest(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "commit", "-am", "target change")
+	return repo, commit
+}
+
 func TestInitLocksWorkspaceFlakeBeforeBaselineCommit(t *testing.T) {
 	remote := seedRemoteRepoWithFlake(t)
 	root := t.TempDir()

@@ -127,8 +127,19 @@ func processIsAlive(pid int) bool {
 }
 
 func runPush(message string, resume bool) error {
+	return runPublish(message, resume, false)
+}
+
+func runCommit(message string) error {
+	return runPublish(message, false, true)
+}
+
+func runPublish(message string, resume, commitOnly bool) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
+		return err
+	}
+	if err := ensureNoConflictJournal(root); err != nil {
 		return err
 	}
 	releaseLock, err := acquirePushLock(root)
@@ -150,47 +161,69 @@ func runPush(message string, resume bool) error {
 		if err := validatePushJournal(manifest, journal); err != nil {
 			return err
 		}
-		if pushJournalHasPlannedRepos(journal) {
+		workspaceTree, err := git(workspacePath, "write-tree")
+		if err != nil {
+			return err
+		}
+		if workspaceTree != journal.WorkspaceTree {
+			return fmt.Errorf("workspace index changed since the publish started; restore the staged snapshot before resuming")
+		}
+		fmt.Printf("resuming push with journal %s\n", pushJournalPath(root))
+	} else {
+		if _, statErr := os.Stat(pushJournalPath(root)); statErr == nil {
+			if commitOnly {
+				return fmt.Errorf("an unfinished publish exists; run gitplex push or gitplex push --resume")
+			}
+			journal, err = loadPushJournal(root)
+			if err != nil {
+				return err
+			}
+			if err := validatePushJournal(manifest, journal); err != nil {
+				return err
+			}
 			workspaceTree, err := git(workspacePath, "write-tree")
 			if err != nil {
 				return err
 			}
 			if workspaceTree != journal.WorkspaceTree {
-				return fmt.Errorf("workspace index changed since the failed push; restore the staged snapshot before resuming")
+				return fmt.Errorf("workspace index changed since gitplex commit; restore the staged snapshot before push")
 			}
+			if pushJournalHasPlannedRepos(journal) {
+				return fmt.Errorf("an unfinished push exists; run gitplex push --resume")
+			}
+			fmt.Printf("publishing commits from journal %s\n", pushJournalPath(root))
+		} else if !os.IsNotExist(statErr) {
+			return statErr
 		}
-		fmt.Printf("resuming push with journal %s\n", pushJournalPath(root))
-	} else {
-		if _, err := os.Stat(pushJournalPath(root)); err == nil {
-			return fmt.Errorf("an unfinished push exists; run gitplex push --resume")
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		stagedPaths, err := workspaceStagedPaths(workspacePath)
-		if err != nil {
-			return err
-		}
-		workspaceTree, err := git(workspacePath, "write-tree")
-		if err != nil {
-			return err
-		}
-		order, err := topoOrder(manifest)
-		if err != nil {
-			return err
-		}
-		journal, err = newPushJournal(manifest, state, message, workspaceTree, stagedPaths, order)
-		if err != nil {
-			return err
-		}
-		if err := validatePushPreflight(manifest, state, journal); err != nil {
-			return err
-		}
-		if err := savePushJournal(root, journal); err != nil {
-			return err
+		if journal != nil {
+			// A prior `gitplex commit` prepared every local commit. Publish it below.
+		} else {
+			stagedPaths, err := workspaceStagedPaths(workspacePath)
+			if err != nil {
+				return err
+			}
+			workspaceTree, err := git(workspacePath, "write-tree")
+			if err != nil {
+				return err
+			}
+			order, err := topoOrder(manifest)
+			if err != nil {
+				return err
+			}
+			journal, err = newPushJournal(manifest, state, message, workspaceTree, stagedPaths, order)
+			if err != nil {
+				return err
+			}
+			if err := validatePushPreflight(manifest, state, journal); err != nil {
+				return err
+			}
+			if err := savePushJournal(root, journal); err != nil {
+				return err
+			}
 		}
 	}
 
-	publishedHeads := map[string]string{}
+	availableHeads := map[string]string{}
 	for _, name := range journal.Order {
 		repoJournal := journal.Repos[name]
 		if repoJournal.Phase == pushPhaseSkipped {
@@ -202,7 +235,7 @@ func runPush(message string, resume bool) error {
 				return err
 			}
 			if verified {
-				publishedHeads[name] = repoJournal.Commit
+				availableHeads[name] = repoJournal.Commit
 				continue
 			}
 			repoJournal.Phase = pushPhaseFailed
@@ -235,7 +268,7 @@ func runPush(message string, resume bool) error {
 			repoJournal.Phase = pushPhasePlanned
 			repoJournal.Error = ""
 			journal.Repos[name] = repoJournal
-			commit, skipped, err := preparePushCommit(root, manifest, state, journal, name, publishedHeads)
+			commit, skipped, err := preparePushCommit(root, manifest, state, journal, name, availableHeads)
 			if err != nil {
 				if restoreErr := restorePushRepo(state.Repos[name].Path, repoJournal.OriginalHead); restoreErr != nil {
 					err = fmt.Errorf("%v; restore backing repo: %w", err, restoreErr)
@@ -258,6 +291,12 @@ func runPush(message string, resume bool) error {
 				return err
 			}
 		}
+		if repoJournal.Commit != "" {
+			availableHeads[name] = repoJournal.Commit
+		}
+		if commitOnly {
+			continue
+		}
 
 		if err := publishJournaledCommit(state.Repos[name].Path, repoJournal.Branch, repoJournal.Commit); err != nil {
 			return failPushRepo(root, journal, name, repoJournal.Commit, err)
@@ -265,7 +304,7 @@ func runPush(message string, resume bool) error {
 		repoJournal.Phase = pushPhasePushed
 		repoJournal.Error = ""
 		journal.Repos[name] = repoJournal
-		publishedHeads[name] = repoJournal.Commit
+		availableHeads[name] = repoJournal.Commit
 		repoState := state.Repos[name]
 		repoState.Head = repoJournal.Commit
 		state.Repos[name] = repoState
@@ -275,6 +314,10 @@ func runPush(message string, resume bool) error {
 		if err := savePushJournal(root, journal); err != nil {
 			return err
 		}
+	}
+	if commitOnly {
+		fmt.Printf("commits prepared; run gitplex push to publish them (journal %s)\n", pushJournalPath(root))
+		return nil
 	}
 
 	unstagedPaths, err := workspaceUnstagedPaths(workspacePath)
@@ -523,4 +566,121 @@ func gitAheadBehind(repoPath string) (int, int, error) {
 		return 0, 0, fmt.Errorf("parse ahead/behind %q: %w", out, err)
 	}
 	return ahead, behind, nil
+}
+
+type pushDryRunRepo struct {
+	Order  int      `json:"order"`
+	Repo   string   `json:"repo"`
+	Branch string   `json:"branch"`
+	Reason string   `json:"reason"`
+	Files  []string `json:"files"`
+}
+
+func PushDryRun(jsonOutput bool) error {
+	root, manifest, state, err := loadProject()
+	if err != nil {
+		return err
+	}
+	if err := ensureNoConflictJournal(root); err != nil {
+		return err
+	}
+	if _, err := os.Stat(pushJournalPath(root)); err == nil {
+		return fmt.Errorf("an unfinished publish exists; inspect status or resume it before planning another push")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	stagedPaths, err := workspaceStagedPaths(workspacePath)
+	if err != nil {
+		return err
+	}
+	if stagedPaths == nil {
+		stagedPaths = []string{}
+	}
+	order, err := topoOrder(manifest)
+	if err != nil {
+		return err
+	}
+	tree, err := git(workspacePath, "write-tree")
+	if err != nil {
+		return err
+	}
+	journal, err := newPushJournal(manifest, state, "dry run", tree, stagedPaths, order)
+	if err != nil {
+		return err
+	}
+	if err := validatePushPreflight(manifest, state, journal); err != nil {
+		return err
+	}
+	directNames := reposForWorkspacePaths(manifest, stagedPaths)
+	direct := stringSet(directNames)
+	affected := stringSet(directNames)
+	for changed := true; changed; {
+		changed = false
+		for name, repo := range manifest.Repos {
+			if affected[name] {
+				continue
+			}
+			for dep := range repo.Dependencies {
+				if affected[dep] {
+					affected[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	filesByRepo := map[string][]string{}
+	unmapped := make([]string, 0)
+	for _, path := range stagedPaths {
+		matched := false
+		for name, repo := range manifest.Repos {
+			for _, module := range repo.Modules {
+				if _, ok := workspacePathInModule(path, module.To); ok {
+					filesByRepo[name] = append(filesByRepo[name], path)
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			unmapped = append(unmapped, path)
+		}
+	}
+	plan := make([]pushDryRunRepo, 0)
+	for _, name := range order {
+		if !affected[name] {
+			continue
+		}
+		reason := "dependency cascade"
+		if direct[name] {
+			reason = "staged workspace files"
+		}
+		files := filesByRepo[name]
+		if files == nil {
+			files = []string{}
+		}
+		plan = append(plan, pushDryRunRepo{Order: len(plan) + 1, Repo: name, Branch: journal.Repos[name].Branch, Reason: reason, Files: files})
+	}
+	if jsonOutput {
+		return writeJSON(map[string]any{"staged_files": stagedPaths, "unmapped_files": unmapped, "execution_order": plan})
+	}
+	fmt.Printf("staged files: %d\n", len(stagedPaths))
+	for _, path := range stagedPaths {
+		fmt.Printf("  %s\n", path)
+	}
+	if len(unmapped) > 0 {
+		fmt.Printf("unmapped (not published): %s\n", strings.Join(unmapped, ", "))
+	}
+	fmt.Println("execution order:")
+	if len(plan) == 0 {
+		fmt.Println("  none")
+	}
+	for _, item := range plan {
+		fmt.Printf("  %d. %s -> origin/%s (%s)\n", item.Order, item.Repo, item.Branch, item.Reason)
+		for _, path := range item.Files {
+			fmt.Printf("     %s\n", path)
+		}
+	}
+	return nil
 }

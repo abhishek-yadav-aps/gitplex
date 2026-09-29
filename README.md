@@ -49,6 +49,12 @@ After initialization, project commands work from any directory inside the projec
 gitplex init manifest.yaml
 gitplex branch feature/my-change
 gitplex status
+gitplex status --json
+gitplex validate
+gitplex diff --staged
+gitplex log --limit 20
+gitplex graph
+gitplex affected app-api
 gitplex doctor
 gitplex pull
 gitplex stash
@@ -63,9 +69,15 @@ gitplex checkout release/main
 gitplex checkout app-api release/main
 gitplex rebase release/main
 gitplex rebase app-api release/main
+gitplex rebase --continue
+gitplex rebase --abort
 gitplex cherrypick app-api abc1234
+gitplex cherrypick --continue
+gitplex cherrypick --abort
 gitplex amend
 gitplex amend --message "app repo changes"
+gitplex commit --message "app repo changes"
+gitplex push --dry-run
 gitplex push --message "app repo changes"
 gitplex push --resume
 ```
@@ -128,6 +140,10 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 
 `gitplex doctor` runs a quick preflight over the generated workspace and backing repos. It checks that required tools are installed, the manifest dependency graph is valid, the workspace is in sync, and each repo has a readable branch/upstream state before you push.
 
+`gitplex validate [manifest.yaml]` rejects unknown YAML fields, unsafe or overlapping mappings, reserved control paths, duplicate dependency inputs, missing repositories, and dependency cycles. `gitplex graph` prints dependency edges and topological execution order. `gitplex affected [repo...]` expands direct repositories to all downstream dependents; with no repository arguments it infers direct repositories from staged workspace files.
+
+`gitplex status --json` exposes machine-readable workspace, repository, upstream, ahead/behind, and publish-journal state. `gitplex diff [repo] [--staged]` scopes a workspace diff to repository-owned paths. `gitplex log [repo] [--limit N] [--json]` merges backing-repository histories by commit time.
+
 `gitplex stash` runs `git stash` in the generated workspace only. Any stash subcommands or flags are passed through to Git, and backing clones under `.gitplex/repos` are not stashed or modified.
 
 `gitplex build` runs `nix build` inside the generated workspace. If `build.cache_push_command` is configured in the manifest, Gitplex runs that command in the workspace after the build succeeds.
@@ -142,11 +158,15 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.
 
+`gitplex push --dry-run` performs push preflight checks without writing a journal or changing a repository. It shows staged files, unmapped files, target branches, dependency-triggered repositories, and execution order. `gitplex commit` performs the local commit phase and leaves the durable journal in place; a subsequent plain `gitplex push` publishes exactly those prepared commits. The combined `gitplex push --message ...` workflow remains available.
+
 Only staged generated-workspace files are pushed. Unstaged workspace edits are preserved locally, and Gitplex skips the final workspace refresh when they are present so it does not overwrite work that was intentionally left unstaged.
 
 Before changing a backing repository, `gitplex push` verifies that its branch is aligned and its working tree and index are clean. It writes a durable operation journal to `.gitplex/push.json`, records each repository as planned, committed, pushed, failed, or skipped, and advances `.gitplex/state.json` only after `git ls-remote` confirms the remote branch points at the new commit. Concurrent pushes are prevented by `.gitplex/push.lock`.
 
 If a remote rejects a push or the operation is interrupted, fix the external problem and run `gitplex push --resume`. Gitplex reuses the existing local commit instead of creating a duplicate, verifies already-pushed repositories, and continues the dependency order. `gitplex status` displays the journal phase and local ahead/behind counts so unpublished commits are not reported as clean.
+
+Rebase and cherry-pick write `.gitplex/conflict.json` before changing backing repositories. If Git reports a conflict, resolve and stage it in the named backing repository and run the matching `--continue`; `--abort` aborts Git's active operation, restores every repository touched by the workflow to its original HEAD, and refreshes the workspace.
 
 ## File ownership
 

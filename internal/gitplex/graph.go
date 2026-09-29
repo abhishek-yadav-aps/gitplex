@@ -1,6 +1,9 @@
 package gitplex
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 func topoOrder(manifest Manifest) ([]string, error) {
 	visiting := map[string]bool{}
@@ -20,7 +23,12 @@ func topoOrder(manifest Manifest) ([]string, error) {
 			return fmt.Errorf("unknown repo %q", name)
 		}
 		visiting[name] = true
+		deps := make([]string, 0, len(repo.Dependencies))
 		for dep := range repo.Dependencies {
+			deps = append(deps, dep)
+		}
+		sort.Strings(deps)
+		for _, dep := range deps {
 			if _, ok := manifest.Repos[dep]; !ok {
 				return fmt.Errorf("repo %q depends on unknown repo %q", name, dep)
 			}
@@ -34,7 +42,12 @@ func topoOrder(manifest Manifest) ([]string, error) {
 		return nil
 	}
 
+	names := make([]string, 0, len(manifest.Repos))
 	for name := range manifest.Repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		if err := visit(name); err != nil {
 			return nil, err
 		}

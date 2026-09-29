@@ -123,6 +123,7 @@ func Status() error {
 	if err != nil {
 		return err
 	}
+	sort.Strings(changed)
 
 	changedSet := make(map[string]bool, len(changed))
 	for _, name := range changed {
@@ -131,6 +132,10 @@ func Status() error {
 	journal, journalErr := loadPushJournal(root)
 	if journalErr != nil && !os.IsNotExist(journalErr) {
 		return journalErr
+	}
+	conflict, conflictErr := loadConflictJournal(root)
+	if conflictErr != nil && !os.IsNotExist(conflictErr) {
+		return conflictErr
 	}
 
 	workspacePath := filepath.Join(root, manifest.Workspace)
@@ -237,6 +242,11 @@ func Status() error {
 	}
 
 	summary := overallStatusSummary(state, statuses, journal != nil)
+	if conflict != nil {
+		command := operationCommand(conflict.Operation)
+		summary = fmt.Sprintf("unfinished %s in %s: run gitplex %s --continue or --abort", conflict.Operation, conflict.Order[conflict.Current], command)
+		warnCount++
+	}
 	fmt.Printf("\nsummary: %s\n", summary)
 	if len(changed) == 0 && warnCount == 0 {
 		return nil
@@ -401,12 +411,18 @@ func Rebase(repoName, branch string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureNoPublishJournal(root); err != nil {
+		return err
+	}
 	changed, err := changedRepos(root, manifest, state)
 	if err != nil {
 		return err
 	}
 	if len(changed) > 0 {
 		return fmt.Errorf("workspace has local changes in %v; run gitplex push or discard them before rebase", changed)
+	}
+	if err := ensureNoConflictJournal(root); err != nil {
+		return err
 	}
 
 	repoNames, err := selectedRepoNames(manifest, repoName)
@@ -424,14 +440,25 @@ func Rebase(repoName, branch string) error {
 		}
 	}
 
-	for _, name := range repoNames {
+	journal, err := newConflictJournal("rebase", branch, repoNames, state)
+	if err != nil {
+		return err
+	}
+	if err := saveConflictJournal(root, journal); err != nil {
+		return err
+	}
+	for index, name := range repoNames {
+		journal.Current = index
+		if err := saveConflictJournal(root, journal); err != nil {
+			return err
+		}
 		repoPath := state.Repos[name].Path
 		fmt.Printf("rebasing %s onto %s\n", name, branch)
 		if err := fetchBranchForRebase(name, repoPath, branch); err != nil {
 			return err
 		}
 		if err := runGitAndPrint(repoPath, "rebase", "origin/"+branch); err != nil {
-			return err
+			return conflictInstruction("rebase", name, err)
 		}
 		head, err := gitHead(repoPath)
 		if err != nil {
@@ -442,18 +469,15 @@ func Rebase(repoName, branch string) error {
 		state.Repos[name] = repoState
 	}
 
-	if err := refreshWorkspace(root, manifest, state); err != nil {
-		return err
-	}
-	if err := generateWorkspaceProject(root, manifest, state); err != nil {
-		return err
-	}
-	return saveState(root, state)
+	return completeConflictWorkflow(root, manifest, state, journal)
 }
 
 func CherryPick(repoName, commit string) error {
 	root, manifest, state, err := loadProject()
 	if err != nil {
+		return err
+	}
+	if err := ensureNoPublishJournal(root); err != nil {
 		return err
 	}
 	repoNames, err := selectedRepoNames(manifest, repoName)
@@ -462,6 +486,9 @@ func CherryPick(repoName, commit string) error {
 	}
 	name := repoNames[0]
 	repoPath := state.Repos[name].Path
+	if err := ensureNoConflictJournal(root); err != nil {
+		return err
+	}
 
 	changed, err := changedRepos(root, manifest, state)
 	if err != nil {
@@ -516,9 +543,16 @@ func CherryPick(repoName, commit string) error {
 		}
 		return saveState(root, state)
 	}
+	journal, err := newConflictJournal("cherry-pick", commit, []string{name}, state)
+	if err != nil {
+		return err
+	}
+	if err := saveConflictJournal(root, journal); err != nil {
+		return err
+	}
 	fmt.Printf("cherry-picking %s into %s\n", commit, name)
 	if err := runGitAndPrint(repoPath, "cherry-pick", commit); err != nil {
-		return err
+		return conflictInstruction("cherry-pick", name, err)
 	}
 	head, err := gitHead(repoPath)
 	if err != nil {
@@ -528,13 +562,7 @@ func CherryPick(repoName, commit string) error {
 	repoState.Head = head
 	state.Repos[name] = repoState
 
-	if err := refreshWorkspace(root, manifest, state); err != nil {
-		return err
-	}
-	if err := generateWorkspaceProjectWithBaseline(root, manifest, state, false); err != nil {
-		return err
-	}
-	return saveState(root, state)
+	return completeConflictWorkflow(root, manifest, state, journal)
 }
 
 func selectedRepoNames(manifest Manifest, repoName string) ([]string, error) {
@@ -996,6 +1024,10 @@ func gitCommitWithMessageArgs(repoPath, message string, args ...string) error {
 
 func Push(message string) error {
 	return runPush(message, false)
+}
+
+func Commit(message string) error {
+	return runCommit(message)
 }
 
 func ResumePush() error {

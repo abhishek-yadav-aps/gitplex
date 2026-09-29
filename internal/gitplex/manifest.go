@@ -1,9 +1,11 @@
 package gitplex
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -49,7 +51,9 @@ func loadManifest(path string) (Manifest, error) {
 	}
 
 	var manifest Manifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&manifest); err != nil {
 		return Manifest{}, err
 	}
 	if manifest.Workspace == "" {
@@ -58,6 +62,9 @@ func loadManifest(path string) (Manifest, error) {
 	if len(manifest.Repos) == 0 {
 		return Manifest{}, fmt.Errorf("manifest must contain at least one repo")
 	}
+	if err := validateWorkspacePath(manifest.Workspace); err != nil {
+		return Manifest{}, fmt.Errorf("workspace %q: %w", manifest.Workspace, err)
+	}
 	if len(manifest.Build.CachePushCommand) > 0 {
 		for i, part := range manifest.Build.CachePushCommand {
 			if strings.TrimSpace(part) == "" {
@@ -65,7 +72,16 @@ func loadManifest(path string) (Manifest, error) {
 			}
 		}
 	}
-	for name, repo := range manifest.Repos {
+	repoNames := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		repoNames = append(repoNames, name)
+	}
+	sort.Strings(repoNames)
+	for _, name := range repoNames {
+		repo := manifest.Repos[name]
+		if err := validateRepoName(name); err != nil {
+			return Manifest{}, err
+		}
 		if repo.URL == "" {
 			return Manifest{}, fmt.Errorf("repo %q is missing url", name)
 		}
@@ -82,14 +98,30 @@ func loadManifest(path string) (Manifest, error) {
 			if err := validateRelativePath(module.To); err != nil {
 				return Manifest{}, fmt.Errorf("repo %q module to %q: %w", name, module.To, err)
 			}
+			if isInternalControlPath(module.From) || isInternalControlPath(module.To) {
+				return Manifest{}, fmt.Errorf("repo %q module mapping %q -> %q uses a reserved Git/Gitplex path", name, module.From, module.To)
+			}
 		}
+		for i := range repo.Modules {
+			for j := i + 1; j < len(repo.Modules); j++ {
+				if pathsOverlap(repo.Modules[i].From, repo.Modules[j].From) || pathsOverlap(repo.Modules[i].To, repo.Modules[j].To) {
+					return Manifest{}, fmt.Errorf("repo %q has overlapping module mappings %q -> %q and %q -> %q", name, repo.Modules[i].From, repo.Modules[i].To, repo.Modules[j].From, repo.Modules[j].To)
+				}
+			}
+		}
+		flakeInputs := map[string]string{}
 		for depName, dep := range repo.Dependencies {
 			if dep.FlakeInput == "" {
 				return Manifest{}, fmt.Errorf("repo %q dependency %q is missing flake_input", name, depName)
 			}
+			if previous, ok := flakeInputs[dep.FlakeInput]; ok {
+				return Manifest{}, fmt.Errorf("repo %q dependencies %q and %q reuse flake_input %q", name, previous, depName, dep.FlakeInput)
+			}
+			flakeInputs[dep.FlakeInput] = depName
 		}
 	}
-	for name, repo := range manifest.Repos {
+	for _, name := range repoNames {
+		repo := manifest.Repos[name]
 		for depName := range repo.Dependencies {
 			if depName == name {
 				return Manifest{}, fmt.Errorf("repo %q cannot depend on itself", name)
@@ -98,6 +130,9 @@ func loadManifest(path string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("repo %q dependency %q does not exist in manifest", name, depName)
 			}
 		}
+	}
+	if _, err := topoOrder(manifest); err != nil {
+		return Manifest{}, err
 	}
 	for i, file := range manifest.WorkspaceFiles {
 		if file.Repo == "" || file.From == "" || file.To == "" {
@@ -115,8 +150,75 @@ func loadManifest(path string) (Manifest, error) {
 		if file.To == "cabal.project" {
 			return Manifest{}, fmt.Errorf("workspace_files[%d] cannot overwrite generated cabal.project", i)
 		}
+		if isInternalControlPath(file.From) || isInternalControlPath(file.To) {
+			return Manifest{}, fmt.Errorf("workspace_files[%d] uses a reserved Git/Gitplex path", i)
+		}
+	}
+	if err := validateDestinationMappings(manifest); err != nil {
+		return Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func validateWorkspacePath(path string) error {
+	if err := validateRelativePath(path); err != nil {
+		return err
+	}
+	if path == "." {
+		return fmt.Errorf("must not be the project root")
+	}
+	if isInternalControlPath(path) {
+		return fmt.Errorf("must not use .git or .gitplex")
+	}
+	return nil
+}
+
+func validateRepoName(name string) error {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, `/\\`) {
+		return fmt.Errorf("repo name %q is not a safe directory name", name)
+	}
+	return nil
+}
+
+func isInternalControlPath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return clean == ".git" || strings.HasPrefix(clean, ".git/") || clean == ".gitplex" || strings.HasPrefix(clean, ".gitplex/")
+}
+
+func pathsOverlap(a, b string) bool {
+	a = filepath.ToSlash(filepath.Clean(a))
+	b = filepath.ToSlash(filepath.Clean(b))
+	return a == b || a == "." || b == "." || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+func validateDestinationMappings(manifest Manifest) error {
+	type destination struct {
+		owner string
+		path  string
+	}
+	var destinations []destination
+	names := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		repo := manifest.Repos[name]
+		for _, module := range repo.Modules {
+			destinations = append(destinations, destination{owner: "repo " + name, path: module.To})
+		}
+	}
+	for i, file := range manifest.WorkspaceFiles {
+		destinations = append(destinations, destination{owner: fmt.Sprintf("workspace_files[%d]", i), path: file.To})
+	}
+	for i := range destinations {
+		for j := i + 1; j < len(destinations); j++ {
+			if pathsOverlap(destinations[i].path, destinations[j].path) {
+				return fmt.Errorf("unsafe overlapping workspace destinations: %s maps %q and %s maps %q", destinations[i].owner, destinations[i].path, destinations[j].owner, destinations[j].path)
+			}
+		}
+	}
+	return nil
 }
 
 func validateRelativePath(path string) error {
