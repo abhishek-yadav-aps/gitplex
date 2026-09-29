@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -365,6 +366,301 @@ func TestPushOnlyUsesStagedWorkspaceChanges(t *testing.T) {
 	}
 	if string(unstagedContent) != "unstaged separate edit\n" {
 		t.Fatalf("workspace src content = %q, want unstaged separate edit preserved", unstagedContent)
+	}
+}
+
+func TestPushFailureCanResumeWithoutDuplicateCommit(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	branch := "test/gitplex-push-resume"
+	if err := Branch(branch); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	gitTest(t, repoPath, "config", "user.name", "Gitplex Test")
+	gitTest(t, repoPath, "config", "user.email", "gitplex@example.test")
+	emptyHooks := filepath.Join(root, "empty-hooks")
+	if err := os.MkdirAll(emptyHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "config", "core.hooksPath", emptyHooks)
+
+	workspaceReadme := filepath.Join(root, "workspace", "app", "README.md")
+	if err := os.WriteFile(workspaceReadme, []byte("resumable publish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Join(root, "workspace"), "add", "app/README.md")
+
+	stateBefore, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteHooks := filepath.Join(remote, "test-hooks")
+	if err := os.MkdirAll(remoteHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, remote, "config", "core.hooksPath", remoteHooks)
+	hook := filepath.Join(remoteHooks, "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Push("resumable test"); err == nil || !strings.Contains(err.Error(), "push --resume") {
+		t.Fatalf("Push error = %v, want resumable failure", err)
+	}
+
+	journal, err := loadPushJournal(root)
+	if err != nil {
+		t.Fatalf("load push journal: %v", err)
+	}
+	failed := journal.Repos["app"]
+	if failed.Phase != pushPhaseFailed || failed.Commit == "" {
+		t.Fatalf("journal repo = %+v, want failed committed push", failed)
+	}
+	stateAfterFailure, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateAfterFailure.Repos["app"].Head != stateBefore.Repos["app"].Head {
+		t.Fatalf("state advanced after rejected push: got %s want %s", stateAfterFailure.Repos["app"].Head, stateBefore.Repos["app"].Head)
+	}
+	if _, _, err := gitOutput(remote, "show-ref", "--verify", "refs/heads/"+branch); err == nil {
+		t.Fatalf("remote branch %s exists after rejected push", branch)
+	}
+	statusOut, err := captureStdout(t, Status)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(statusOut, "publish=failed") || !strings.Contains(statusOut, "unfinished push: run gitplex push --resume") {
+		t.Fatalf("status output does not expose failed push:\n%s", statusOut)
+	}
+
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResumePush(); err != nil {
+		t.Fatalf("resume push: %v", err)
+	}
+	if _, err := os.Stat(pushJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("push journal remains after success: %v", err)
+	}
+	remoteHead := gitTest(t, remote, "rev-parse", "refs/heads/"+branch)
+	if remoteHead != failed.Commit {
+		t.Fatalf("remote head = %s, want journaled commit %s", remoteHead, failed.Commit)
+	}
+	stateAfterResume, err := loadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateAfterResume.Repos["app"].Head != failed.Commit {
+		t.Fatalf("state head = %s, want verified remote commit %s", stateAfterResume.Repos["app"].Head, failed.Commit)
+	}
+	if got := gitTest(t, repoPath, "rev-list", "--count", stateBefore.Repos["app"].Head+"..HEAD"); got != "1" {
+		t.Fatalf("local commits after resume = %s, want exactly one", got)
+	}
+}
+
+func TestPushResumeContinuesDependencyOrder(t *testing.T) {
+	appRemote := seedRemoteRepoWithDependencyFlake(t)
+	depRemote := seedRemoteRepoWithFlake(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeDependencyManifestWithWorkspaceFlake(t, manifestPath, appRemote, depRemote)
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	branch := "test/gitplex-dependency-resume"
+	if err := Branch(branch); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	emptyHooks := filepath.Join(root, "empty-hooks")
+	if err := os.MkdirAll(emptyHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"app", "dep"} {
+		repoPath := filepath.Join(root, ".gitplex", "repos", name)
+		gitTest(t, repoPath, "config", "user.name", "Gitplex Test")
+		gitTest(t, repoPath, "config", "user.email", "gitplex@example.test")
+		gitTest(t, repoPath, "config", "core.hooksPath", emptyHooks)
+	}
+
+	workspacePath := filepath.Join(root, "workspace")
+	depReadme := filepath.Join(workspacePath, "dep", "README.md")
+	if err := os.WriteFile(depReadme, []byte("dependency publish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, workspacePath, "add", "dep/README.md")
+
+	remoteHooks := filepath.Join(appRemote, "test-hooks")
+	if err := os.MkdirAll(remoteHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, appRemote, "config", "core.hooksPath", remoteHooks)
+	hook := filepath.Join(remoteHooks, "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Push("dependency resume"); err == nil {
+		t.Fatal("Push succeeded, want app remote rejection")
+	}
+	journal, err := loadPushJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if journal.Repos["dep"].Phase != pushPhasePushed || journal.Repos["app"].Phase != pushPhaseFailed {
+		t.Fatalf("journal phases: dep=%s app=%s", journal.Repos["dep"].Phase, journal.Repos["app"].Phase)
+	}
+	depCommit := journal.Repos["dep"].Commit
+	appCommit := journal.Repos["app"].Commit
+	if depCommit == "" || appCommit == "" {
+		t.Fatalf("journal commits missing: dep=%q app=%q", depCommit, appCommit)
+	}
+
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResumePush(); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got := gitTest(t, depRemote, "rev-parse", "refs/heads/"+branch); got != depCommit {
+		t.Fatalf("dep remote = %s, want %s", got, depCommit)
+	}
+	if got := gitTest(t, appRemote, "rev-parse", "refs/heads/"+branch); got != appCommit {
+		t.Fatalf("app remote = %s, want %s", got, appCommit)
+	}
+	appFlake := gitTest(t, appRemote, "show", branch+":flake.nix")
+	if !strings.Contains(appFlake, `ref = "`+branch+`";`) || !strings.Contains(appFlake, `rev = "`+depCommit+`";`) {
+		t.Fatalf("app flake does not reference published dependency:\n%s", appFlake)
+	}
+	depLocal := filepath.Join(root, ".gitplex", "repos", "dep")
+	if got := gitTest(t, depLocal, "rev-list", "--count", journal.Repos["dep"].OriginalHead+"..HEAD"); got != "1" {
+		t.Fatalf("dependency commits after resume = %s, want one", got)
+	}
+}
+
+func TestPushRejectsPreExistingBackingRepoChanges(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "README.md"), []byte("unrelated backing edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "add", "src/README.md")
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.WriteFile(filepath.Join(workspacePath, "app", "README.md"), []byte("workspace publish edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, workspacePath, "add", "app/README.md")
+
+	err := Push("must not include backing index")
+	if err == nil || !strings.Contains(err.Error(), "pre-existing changes") {
+		t.Fatalf("Push error = %v, want pre-existing backing change rejection", err)
+	}
+	if _, err := os.Stat(pushJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("journal created despite failed preflight: %v", err)
+	}
+	staged := gitTest(t, repoPath, "diff", "--cached", "--name-only")
+	if staged != "src/README.md" {
+		t.Fatalf("backing index changed during rejected push: %q", staged)
+	}
+}
+
+func TestStatusReportsAheadAndBehindCounts(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	gitTest(t, repoPath, "config", "user.name", "Gitplex Test")
+	gitTest(t, repoPath, "config", "user.email", "gitplex@example.test")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("local unpublished\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repoPath, "commit", "-am", "local unpublished")
+
+	out, err := captureStdout(t, Status)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out, "ahead=1, behind=0") || !strings.Contains(out, "summary: unpublished commits in app") {
+		t.Fatalf("status output missing ahead/behind state:\n%s", out)
+	}
+}
+
+func TestPushLockPreventsConcurrentOperation(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := os.WriteFile(pushLockPath(root), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Push("locked")
+	if err == nil || !strings.Contains(err.Error(), "another gitplex push is active") {
+		t.Fatalf("Push error = %v, want operation lock rejection", err)
+	}
+}
+
+func TestAcquirePushLockReplacesStaleLock(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".gitplex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pushLockPath(root), []byte("999999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquirePushLock(root)
+	if err != nil {
+		t.Fatalf("acquire stale lock: %v", err)
+	}
+	release()
+	if _, err := os.Stat(pushLockPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("push lock remains after release: %v", err)
+	}
+}
+
+func TestRecoverCommitCreatedBeforeJournalSave(t *testing.T) {
+	repo := seedRemoteRepo(t)
+	originalHead := gitTest(t, repo, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("journal boundary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repo, "add", "README.md")
+	gitTest(t, repo, "commit", "-m", "journaled message")
+	expected := gitTest(t, repo, "rev-parse", "HEAD")
+
+	commit, found, err := recoverCommitBeforeJournalSave(repo, pushJournalRepo{OriginalHead: originalHead}, "journaled message")
+	if err != nil {
+		t.Fatalf("recover commit: %v", err)
+	}
+	if !found || commit != expected {
+		t.Fatalf("recover commit = %q, %v; want %q, true", commit, found, expected)
 	}
 }
 

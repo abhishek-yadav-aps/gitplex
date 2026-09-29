@@ -193,9 +193,11 @@ gitplex true-build</code></pre>
           <article>
             <span>04 PUSH</span>
             <h3>Publish intentionally</h3>
-            <p>Only staged workspace files are copied back, committed, and pushed through dependency order.</p>
+            <p>Only staged workspace files are copied back, journaled, remotely verified, and pushed through dependency order.</p>
 <pre><code>git add app-db app-gateway
-gitplex push -m "ship the change"</code></pre>
+gitplex push -m "ship the change"
+# after a rejected or interrupted push:
+gitplex push --resume</code></pre>
           </article>
         </div>
       </section>

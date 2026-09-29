@@ -67,6 +67,7 @@ gitplex cherrypick app-api abc1234
 gitplex amend
 gitplex amend --message "app repo changes"
 gitplex push --message "app repo changes"
+gitplex push --resume
 ```
 
 ## Manifest
@@ -142,6 +143,10 @@ When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also
 `gitplex push` processes repositories in dependency order. When a dependency repository is committed and pushed, downstream repositories get their configured `flake.nix` input updated with the dependency branch and commit. Before committing that downstream repository, Gitplex runs `nix flake lock --update-input <flake-input>` for each dependency input it changed, so `flake.lock` is refreshed along with `flake.nix`.
 
 Only staged generated-workspace files are pushed. Unstaged workspace edits are preserved locally, and Gitplex skips the final workspace refresh when they are present so it does not overwrite work that was intentionally left unstaged.
+
+Before changing a backing repository, `gitplex push` verifies that its branch is aligned and its working tree and index are clean. It writes a durable operation journal to `.gitplex/push.json`, records each repository as planned, committed, pushed, failed, or skipped, and advances `.gitplex/state.json` only after `git ls-remote` confirms the remote branch points at the new commit. Concurrent pushes are prevented by `.gitplex/push.lock`.
+
+If a remote rejects a push or the operation is interrupted, fix the external problem and run `gitplex push --resume`. Gitplex reuses the existing local commit instead of creating a duplicate, verifies already-pushed repositories, and continues the dependency order. `gitplex status` displays the journal phase and local ahead/behind counts so unpublished commits are not reported as clean.
 
 ## File ownership
 

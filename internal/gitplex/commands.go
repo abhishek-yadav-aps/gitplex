@@ -17,7 +17,10 @@ type repoStatus struct {
 	repoDirty       bool
 	upstream        string
 	upstreamMissing bool
+	ahead           int
+	behind          int
 	headChanged     bool
+	publishPhase    string
 }
 
 func Init(manifestPath string) error {
@@ -125,6 +128,10 @@ func Status() error {
 	for _, name := range changed {
 		changedSet[name] = true
 	}
+	journal, journalErr := loadPushJournal(root)
+	if journalErr != nil && !os.IsNotExist(journalErr) {
+		return journalErr
+	}
 
 	workspacePath := filepath.Join(root, manifest.Workspace)
 	fmt.Printf("workspace: %s\n", workspacePath)
@@ -157,6 +164,13 @@ func Status() error {
 			return err
 		}
 		upstream, upstreamErr := git(repoState.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+		ahead, behind := 0, 0
+		if upstreamErr == nil && upstream != "" {
+			ahead, behind, err = gitAheadBehind(repoState.Path)
+			if err != nil {
+				return err
+			}
+		}
 		head, err := gitHead(repoState.Path)
 		if err != nil {
 			return err
@@ -170,7 +184,14 @@ func Status() error {
 			repoDirty:       dirty,
 			upstream:        upstream,
 			upstreamMissing: upstreamErr != nil || upstream == "",
+			ahead:           ahead,
+			behind:          behind,
 			headChanged:     repoState.Head != "" && head != repoState.Head,
+		}
+		if journal != nil {
+			if journalRepo, ok := journal.Repos[name]; ok {
+				status.publishPhase = journalRepo.Phase
+			}
 		}
 		statuses = append(statuses, status)
 
@@ -193,6 +214,10 @@ func Status() error {
 		}
 		if !status.upstreamMissing {
 			statusParts = append(statusParts, fmt.Sprintf("upstream=%s", status.upstream))
+			statusParts = append(statusParts, fmt.Sprintf("ahead=%d", status.ahead), fmt.Sprintf("behind=%d", status.behind))
+			if status.ahead > 0 || status.behind > 0 {
+				warnCount++
+			}
 		} else {
 			statusParts = append(statusParts, "upstream=missing")
 			warnCount++
@@ -201,11 +226,17 @@ func Status() error {
 			statusParts = append(statusParts, "head=changed")
 			warnCount++
 		}
+		if status.publishPhase != "" {
+			statusParts = append(statusParts, fmt.Sprintf("publish=%s", status.publishPhase))
+			if status.publishPhase != pushPhasePushed && status.publishPhase != pushPhaseSkipped {
+				warnCount++
+			}
+		}
 
 		fmt.Printf("%s: %s\n", name, strings.Join(statusParts, ", "))
 	}
 
-	summary := overallStatusSummary(state, statuses)
+	summary := overallStatusSummary(state, statuses, journal != nil)
 	fmt.Printf("\nsummary: %s\n", summary)
 	if len(changed) == 0 && warnCount == 0 {
 		return nil
@@ -214,12 +245,14 @@ func Status() error {
 	return nil
 }
 
-func overallStatusSummary(state State, statuses []repoStatus) string {
+func overallStatusSummary(state State, statuses []repoStatus, unfinishedPush bool) string {
 	var workspaceDirtyCount int
 	var repoDirty []string
 	var branchMismatch []string
 	var upstreamMissing []string
 	var headChanged []string
+	var ahead []string
+	var behind []string
 
 	for _, status := range statuses {
 		if status.workspaceDirty {
@@ -241,16 +274,31 @@ func overallStatusSummary(state State, statuses []repoStatus) string {
 		if status.headChanged {
 			headChanged = append(headChanged, status.name)
 		}
+		if status.ahead > 0 {
+			ahead = append(ahead, status.name)
+		}
+		if status.behind > 0 {
+			behind = append(behind, status.name)
+		}
 	}
 
 	if len(repoDirty) > 0 {
 		return fmt.Sprintf("blocked: backing repo changes need attention in %s", strings.Join(repoDirty, ", "))
+	}
+	if unfinishedPush {
+		return "unfinished push: run gitplex push --resume"
 	}
 	if len(branchMismatch) > 0 {
 		if state.Branch == "" {
 			return fmt.Sprintf("needs branch: run gitplex branch <branch> before push (%s)", strings.Join(branchMismatch, ", "))
 		}
 		return fmt.Sprintf("needs branch alignment in %s", strings.Join(branchMismatch, ", "))
+	}
+	if len(behind) > 0 {
+		return fmt.Sprintf("behind upstream in %s", strings.Join(behind, ", "))
+	}
+	if len(ahead) > 0 {
+		return fmt.Sprintf("unpublished commits in %s", strings.Join(ahead, ", "))
 	}
 	if len(headChanged) > 0 {
 		return fmt.Sprintf("needs sync: backing repo head changed in %s", strings.Join(headChanged, ", "))
@@ -947,120 +995,11 @@ func gitCommitWithMessageArgs(repoPath, message string, args ...string) error {
 }
 
 func Push(message string) error {
-	root, manifest, state, err := loadProject()
-	if err != nil {
-		return err
-	}
-	workspacePath := filepath.Join(root, manifest.Workspace)
-	unstagedWorkspacePaths, err := workspaceUnstagedPaths(workspacePath)
-	if err != nil {
-		return err
-	}
-	stagedWorkspacePaths, err := workspaceStagedPaths(workspacePath)
-	if err != nil {
-		return err
-	}
-	order, err := topoOrder(manifest)
-	if err != nil {
-		return err
-	}
-	publishedHeads := map[string]string{}
-	failedRepos := map[string]bool{}
-	var pushErrors []string
+	return runPush(message, false)
+}
 
-	for _, name := range order {
-		repo := manifest.Repos[name]
-		repoPath := state.Repos[name].Path
-		fmt.Printf("\n== %s ==\n", name)
-		if currentBranch(state, name, repo) == "" {
-			return fmt.Errorf("repo %q has no push branch; run gitplex branch <branch> or set repo ref in manifest", name)
-		}
-		if err := syncStagedWorkspaceToRepo(root, manifest, state, name, stagedWorkspacePaths); err != nil {
-			return err
-		}
-		skipRepo := false
-		var updatedFlakeInputs []string
-		for depName, depConfig := range repo.Dependencies {
-			if failedRepos[depName] {
-				msg := fmt.Sprintf("skipped because dependency repo %q did not push successfully", depName)
-				fmt.Println(msg)
-				failedRepos[name] = true
-				pushErrors = append(pushErrors, fmt.Sprintf("%s: %s", name, msg))
-				skipRepo = true
-				break
-			}
-			if head := publishedHeads[depName]; head != "" {
-				depRef := currentBranch(state, depName, manifest.Repos[depName])
-				if depRef == "" {
-					return fmt.Errorf("dependency repo %q has no ref for flake update", depName)
-				}
-				if err := updateFlakeInput(repoPath, depConfig.FlakeInput, depRef, head); err != nil {
-					return err
-				}
-				updatedFlakeInputs = append(updatedFlakeInputs, depConfig.FlakeInput)
-			}
-		}
-		if skipRepo {
-			continue
-		}
-		for _, flakeInput := range updatedFlakeInputs {
-			if err := runCommandAndPrint(repoPath, "nix", "flake", "lock", "--update-input", flakeInput); err != nil {
-				failedRepos[name] = true
-				pushErrors = append(pushErrors, fmt.Sprintf("%s: %v", name, err))
-				skipRepo = true
-				break
-			}
-		}
-		if skipRepo {
-			continue
-		}
-		if len(updatedFlakeInputs) > 0 {
-			if _, err := git(repoPath, "add", "-A", "--", "flake.nix", "flake.lock"); err != nil {
-				return err
-			}
-		}
-		staged, err := gitHasStagedChanges(repoPath)
-		if err != nil {
-			return err
-		}
-		if !staged {
-			fmt.Println("no changes to push; skipping")
-			continue
-		}
-		if err := runGitAndPrint(repoPath, "commit", "-m", message); err != nil {
-			return err
-		}
-		if err := runGitAndPrint(repoPath, "push", "-u", "origin", currentBranch(state, name, repo)); err != nil {
-			failedRepos[name] = true
-			pushErrors = append(pushErrors, fmt.Sprintf("%s: %v", name, err))
-		}
-		head, err := gitHead(repoPath)
-		if err != nil {
-			return err
-		}
-		publishedHeads[name] = head
-		repoState := state.Repos[name]
-		repoState.Head = head
-		state.Repos[name] = repoState
-	}
-
-	if len(unstagedWorkspacePaths) == 0 {
-		if err := refreshWorkspace(root, manifest, state); err != nil {
-			return err
-		}
-		if err := generateWorkspaceProject(root, manifest, state); err != nil {
-			return err
-		}
-	} else {
-		fmt.Printf("workspace has unstaged changes in %v; skipped workspace refresh to preserve them\n", unstagedWorkspacePaths)
-	}
-	if err := saveState(root, state); err != nil {
-		return err
-	}
-	if len(pushErrors) > 0 {
-		return fmt.Errorf("push failed:\n%s", strings.Join(pushErrors, "\n"))
-	}
-	return nil
+func ResumePush() error {
+	return runPush("", true)
 }
 
 func workspaceUnstagedPaths(workspacePath string) ([]string, error) {

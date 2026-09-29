@@ -91,9 +91,12 @@ func Run(args []string) error {
 		}
 		return Amend(message)
 	case "push":
-		message, err := parsePushArgs(args[1:])
+		message, resume, err := parsePushArgs(args[1:])
 		if err != nil {
 			return err
+		}
+		if resume {
+			return ResumePush()
 		}
 		return Push(message)
 	default:
@@ -198,15 +201,30 @@ func parseCherryPickArgs(args []string) (string, string, error) {
 	return args[0], args[1], nil
 }
 
-func parsePushArgs(args []string) (string, error) {
-	message, err := parseOptionalMessageArgs("push", args)
-	if err != nil {
-		return "", err
+func parsePushArgs(args []string) (string, bool, error) {
+	message := ""
+	resume := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--resume":
+			resume = true
+		case "--message", "-message", "-m":
+			i++
+			if i >= len(args) {
+				return "", false, fmt.Errorf("%s requires a value", args[i-1])
+			}
+			message = args[i]
+		default:
+			return "", false, fmt.Errorf("usage: gitplex push [--message <message>] | gitplex push --resume")
+		}
+	}
+	if resume && message != "" {
+		return "", false, fmt.Errorf("gitplex push --resume reuses the journaled commit message and cannot accept --message")
 	}
 	if message == "" {
 		message = "gitplex sync"
 	}
-	return message, nil
+	return message, resume, nil
 }
 
 func parseAmendArgs(args []string) (string, error) {
@@ -253,6 +271,7 @@ var commandHelps = []commandHelp{
 	{"gitplex branch <branch>", "Create or reset the same branch in every backing repo for future pushes."},
 	{"gitplex amend [--message <message>]", "Rewrite the last commit in backing repos with current workspace changes."},
 	{"gitplex push [--message <message>]", "Commit and push changed backing repos in dependency order, updating downstream Nix inputs."},
+	{"gitplex push --resume", "Resume an interrupted or failed publish from its durable operation journal."},
 }
 
 func printCommandHelp(w io.Writer) {
