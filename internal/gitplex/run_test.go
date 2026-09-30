@@ -17,6 +17,7 @@ func TestPrintCommandHelpIncludesCommandDescriptions(t *testing.T) {
 		"gitplex status",
 		"gitplex doctor",
 		"gitplex install-extensions",
+		"gitplex update",
 		"gitplex shell-init",
 		"gitplex workspace-mode [--force]",
 		"gitplex push [--message <message>]",
@@ -25,6 +26,15 @@ func TestPrintCommandHelpIncludesCommandDescriptions(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help text missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestParseUpdateArgs(t *testing.T) {
+	if err := parseUpdateArgs(nil); err != nil {
+		t.Fatalf("parse update: %v", err)
+	}
+	if err := parseUpdateArgs([]string{"unexpected"}); err == nil {
+		t.Fatal("parse update with arguments succeeded")
 	}
 }
 

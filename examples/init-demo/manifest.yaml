@@ -4,16 +4,10 @@ repos:
   app-db:
     url: examples/init-demo/remotes/app-db
     ref: main
-    modules:
-      - from: .
-        to: app-db
 
   app-gateway:
     url: examples/init-demo/remotes/app-gateway
     ref: main
-    modules:
-      - from: .
-        to: app-gateway
     dependencies:
       app-db:
         flake_input: app-db
@@ -21,9 +15,6 @@ repos:
   app-service:
     url: examples/init-demo/remotes/app-service
     ref: main
-    modules:
-      - from: .
-        to: app-service
     dependencies:
       app-gateway:
         flake_input: app-gateway

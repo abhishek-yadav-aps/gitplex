@@ -75,6 +75,10 @@ func Init(manifestPath string) error {
 		}
 		state.Repos[name] = RepoState{URL: repo.URL, Path: repoPath, Head: head}
 	}
+	manifest, err = resolveAutomaticModules(manifest, state)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("refreshing workspace %s\n", manifest.Workspace)
 	if err := refreshWorkspace(root, manifest, state); err != nil {
@@ -484,6 +488,9 @@ func Rebase(repoName, branch string) error {
 		}
 		repoPath := state.Repos[name].Path
 		fmt.Printf("rebasing %s onto %s\n", name, branch)
+		if err := unshallowForRebase(name, repoPath); err != nil {
+			return err
+		}
 		if err := fetchBranchForRebase(name, repoPath, branch); err != nil {
 			return err
 		}
@@ -830,6 +837,22 @@ func fetchBranchForRebase(name, repoPath, branch string) error {
 	remoteBranch := "refs/remotes/origin/" + branch
 	if _, err := git(repoPath, "fetch", "origin", branch+":"+remoteBranch); err != nil {
 		return fmt.Errorf("fetch branch %q for repo %q: %w", branch, name, err)
+	}
+	return nil
+}
+
+func unshallowForRebase(name, repoPath string) error {
+	shallow, err := git(repoPath, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return fmt.Errorf("check whether repo %q is shallow: %w", name, err)
+	}
+	if shallow != "true" {
+		return nil
+	}
+
+	fmt.Printf("unshallowing %s before rebase\n", name)
+	if _, err := git(repoPath, "fetch", "--unshallow", "origin"); err != nil {
+		return fmt.Errorf("unshallow repo %q before rebase: %w", name, err)
 	}
 	return nil
 }
@@ -1181,6 +1204,10 @@ func loadProject() (string, Manifest, State, error) {
 		return "", Manifest{}, State{}, err
 	}
 	manifest, err := loadManifest(state.ManifestPath)
+	if err != nil {
+		return "", Manifest{}, State{}, err
+	}
+	manifest, err = resolveAutomaticModules(manifest, state)
 	if err != nil {
 		return "", Manifest{}, State{}, err
 	}

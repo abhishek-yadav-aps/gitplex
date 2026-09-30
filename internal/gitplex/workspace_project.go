@@ -114,9 +114,7 @@ func discoverCabalPackageDirs(workspacePath string) ([]string, error) {
 
 	packageDirs := make([]string, 0, len(seen))
 	for dir := range seen {
-		if dir != "." {
-			packageDirs = append(packageDirs, dir)
-		}
+		packageDirs = append(packageDirs, dir)
 	}
 	sort.Strings(packageDirs)
 	return packageDirs, nil
@@ -805,7 +803,8 @@ func removeMergedRepoFlakeInputs(lines []string, manifest Manifest) []string {
 
 func mergedRepoFlakeInputs(manifest Manifest) map[string]bool {
 	inputs := map[string]bool{}
-	for _, repo := range manifest.Repos {
+	for name, repo := range manifest.Repos {
+		inputs[name] = true
 		for _, dep := range repo.Dependencies {
 			if dep.FlakeInput != "" {
 				inputs[dep.FlakeInput] = true
