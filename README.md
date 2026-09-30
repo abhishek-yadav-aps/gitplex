@@ -200,3 +200,5 @@ Paths are relative to the current directory; absolute paths work too. From insid
 The report includes the source repo and repo-relative path, the absolute original path, and separate `generated`, `copied`, and `publishable` flags. Module files are copied and publishable. Workspace support files include explicitly configured copies, implicit root files, and discovered local dependencies. Gitplex-created or patched configuration is marked generated. Files without a mapping are marked unmapped. Publishable means covered by the mappings used by `push`/`amend`; staging is still required. A generated file can also be copied or covered by a module mapping.
 
 The optional [VS Code extension](editors/vscode/README.md) shows ownership for the active file in the status bar, with details on hover and click. See its README for launch and packaging instructions.
+
+Install the bundled extension into VS Code with `gitplex install-extensions`.

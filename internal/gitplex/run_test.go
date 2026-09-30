@@ -16,6 +16,7 @@ func TestPrintCommandHelpIncludesCommandDescriptions(t *testing.T) {
 		"gitplex init <manifest.yaml>",
 		"gitplex status",
 		"gitplex doctor",
+		"gitplex install-extensions",
 		"gitplex shell-init",
 		"gitplex workspace-mode [--force]",
 		"gitplex push [--message <message>]",

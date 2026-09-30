@@ -4,6 +4,12 @@ Shows the active file's source repository, kind, and publishing eligibility in t
 
 Build/install a Gitplex binary that supports `which --json`, and put it on PATH or set the VS Code user setting `gitplex.executablePath` to its absolute path.
 
+To install the extension from a Gitplex binary, run:
+
+```sh
+gitplex install-extensions
+```
+
 To try the extension without installing it:
 
 ```sh
