@@ -19,7 +19,13 @@ type Manifest struct {
 }
 
 type BuildConfig struct {
-	CachePushCommand []string `yaml:"cache_push_command"`
+	CachePushCommand []string          `yaml:"cache_push_command"`
+	SetupCache       *SetupCacheConfig `yaml:"setup_cache"`
+}
+
+type SetupCacheConfig struct {
+	Command  string     `yaml:"command"`
+	Commands [][]string `yaml:"commands"`
 }
 
 type RepoConfig struct {
@@ -69,6 +75,24 @@ func loadManifest(path string) (Manifest, error) {
 		for i, part := range manifest.Build.CachePushCommand {
 			if strings.TrimSpace(part) == "" {
 				return Manifest{}, fmt.Errorf("build cache_push_command[%d] must not be empty", i)
+			}
+		}
+	}
+	if setup := manifest.Build.SetupCache; setup != nil {
+		if strings.TrimSpace(setup.Command) == "" {
+			return Manifest{}, fmt.Errorf("build setup_cache command must not be empty")
+		}
+		if len(setup.Commands) == 0 {
+			return Manifest{}, fmt.Errorf("build setup_cache commands must contain at least one command")
+		}
+		for i, command := range setup.Commands {
+			if len(command) == 0 {
+				return Manifest{}, fmt.Errorf("build setup_cache commands[%d] must not be empty", i)
+			}
+			for j, part := range command {
+				if strings.TrimSpace(part) == "" {
+					return Manifest{}, fmt.Errorf("build setup_cache commands[%d][%d] must not be empty", i, j)
+				}
 			}
 		}
 	}

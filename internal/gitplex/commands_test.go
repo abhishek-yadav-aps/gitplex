@@ -1172,6 +1172,76 @@ func TestBuildRunsConfiguredCachePushAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestBuildRunsAllCacheSetupCommandsWhenCacheCommandIsMissing(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependRecordingFakeNix(t, root)
+	firstCwdLog, firstArgsLog := prependRecordingFakeCommand(t, root, "setup-cache-one")
+	secondCwdLog, secondArgsLog := prependRecordingFakeCommand(t, root, "setup-cache-two")
+	prependRecordingFakeCommand(t, root, "cache-push")
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithCacheSetup(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	wantWorkspace, err := filepath.EvalSymlinks(filepath.Join(root, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cwdLog := range []string{firstCwdLog, secondCwdLog} {
+		cwd, err := os.ReadFile(cwdLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := wantWorkspace + "\n"; string(cwd) != want {
+			t.Fatalf("cache setup cwd = %q, want %q", cwd, want)
+		}
+	}
+	for path, want := range map[string]string{
+		firstArgsLog:  "install\nattic\n",
+		secondArgsLog: "configure\nexample-cache\n",
+	} {
+		args, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(args) != want {
+			t.Fatalf("cache setup args = %q, want %q", args, want)
+		}
+	}
+}
+
+func TestBuildSkipsCacheSetupWhenCacheCommandExists(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+	prependRecordingFakeNix(t, root)
+	prependRecordingFakeCommand(t, root, "cache-tool")
+	setupCwdLog, _ := prependRecordingFakeCommand(t, root, "setup-cache-one")
+	prependRecordingFakeCommand(t, root, "setup-cache-two")
+	prependRecordingFakeCommand(t, root, "cache-push")
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithCacheSetup(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatalf("init main: %v", err)
+	}
+
+	if err := Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := os.Stat(setupCwdLog); !os.IsNotExist(err) {
+		t.Fatalf("cache setup ran when cache command exists, stat err = %v", err)
+	}
+}
+
 func TestBuildDoesNotRunConfiguredCachePushWhenBuildFails(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
@@ -2384,6 +2454,14 @@ func writeManifest(t *testing.T, path, remote, ref string) {
 func writeManifestWithCachePush(t *testing.T, path, remote, ref string) {
 	t.Helper()
 	data := []byte("workspace: workspace\nbuild:\n  cache_push_command:\n    - cache-push\n    - push\n    - example-cache\n    - ./result\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeManifestWithCacheSetup(t *testing.T, path, remote, ref string) {
+	t.Helper()
+	data := []byte("workspace: workspace\nbuild:\n  setup_cache:\n    command: cache-tool\n    commands:\n      - [setup-cache-one, install, attic]\n      - [setup-cache-two, configure, example-cache]\n  cache_push_command:\n    - cache-push\n    - push\n    - example-cache\n    - ./result\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

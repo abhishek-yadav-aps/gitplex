@@ -105,7 +105,23 @@ build:
     - ./result
 ```
 
-`gitplex build` runs this command inside the generated workspace only after the Nix build succeeds. `gitplex true-build` does not run the cache push command.
+If the cache client may not be installed yet, add `build.setup_cache`. `command` is the executable Gitplex checks on `PATH`, and `commands` is a list of command arrays to run in order when that executable is missing:
+
+```yaml
+build:
+  setup_cache:
+    command: attic
+    commands:
+      - [nix, profile, install, nixpkgs#attic-client]
+      - [attic, login, example, https://cache.example.com, token]
+  cache_push_command:
+    - attic
+    - push
+    - example:cache
+    - ./result
+```
+
+`gitplex build` checks the cache command first and skips setup when it is already available. Otherwise, it runs every setup command inside the generated workspace before starting the Nix build. After a successful build, it runs `cache_push_command` there too. `gitplex true-build` does not set up or push to the cache.
 
 `gitplex` always generates a merged `cabal.project` by scanning for `.cabal` files inside the workspace. That keeps the package list generic.
 
