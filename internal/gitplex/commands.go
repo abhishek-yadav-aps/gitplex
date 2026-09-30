@@ -680,11 +680,16 @@ func WorkspaceMode(force bool) error {
 }
 
 func WorkspaceModePath(force bool) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
 	root, manifest, state, err := loadProject()
 	if err != nil {
 		return "", err
 	}
 	workspacePath := filepath.Join(root, manifest.Workspace)
+	fromWorkspace := pathContains(workspacePath, cwd)
 	if err := ensureBackingReposClean(manifest, state, "workspace-mode"); err != nil {
 		return "", err
 	}
@@ -701,6 +706,11 @@ func WorkspaceModePath(force bool) (string, error) {
 			return "", statErr
 		}
 	}
+	if fromWorkspace {
+		if err := os.Chdir(root); err != nil {
+			return "", fmt.Errorf("leave generated workspace before refresh: %w", err)
+		}
+	}
 	if err := removeGeneratedPath(workspacePath); err != nil {
 		return "", err
 	}
@@ -713,7 +723,20 @@ func WorkspaceModePath(force bool) (string, error) {
 	if err := saveState(root, state); err != nil {
 		return "", err
 	}
+	if fromWorkspace {
+		if err := os.Chdir(workspacePath); err != nil {
+			return "", fmt.Errorf("enter regenerated workspace: %w", err)
+		}
+	}
 	return workspacePath, nil
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func ensureBackingReposClean(manifest Manifest, state State, command string) error {
