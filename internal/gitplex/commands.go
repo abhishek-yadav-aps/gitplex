@@ -384,6 +384,11 @@ func runWorkspaceNixBuild(disableSubstitutes, runCachePush bool) error {
 		return err
 	}
 	workspacePath := filepath.Join(root, manifest.Workspace)
+	if runCachePush {
+		if err := runBuildCacheSetup(workspacePath, manifest.Build.SetupCache); err != nil {
+			return err
+		}
+	}
 	args := []string{
 		"build",
 	}
@@ -395,6 +400,23 @@ func runWorkspaceNixBuild(disableSubstitutes, runCachePush bool) error {
 	}
 	if runCachePush {
 		return runBuildCachePushCommand(workspacePath, manifest.Build.CachePushCommand)
+	}
+	return nil
+}
+
+func runBuildCacheSetup(workspacePath string, setup *SetupCacheConfig) error {
+	if setup == nil {
+		return nil
+	}
+	if _, err := exec.LookPath(setup.Command); err == nil {
+		fmt.Printf("cache command %s is already available; skipping setup\n", setup.Command)
+		return nil
+	}
+	fmt.Printf("cache command %s is not available; running setup\n", setup.Command)
+	for _, command := range setup.Commands {
+		if err := runCommandAndPrint(workspacePath, command[0], command[1:]...); err != nil {
+			return err
+		}
 	}
 	return nil
 }
