@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestInitFetchesChangedManifestBranchForExistingClone(t *testing.T) {
+func TestInitRefusesInsideExistingProject(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
 	chdir(t, root)
@@ -20,22 +20,32 @@ func TestInitFetchesChangedManifestBranchForExistingClone(t *testing.T) {
 		t.Fatalf("init main: %v", err)
 	}
 
-	writeManifest(t, manifestPath, remote, "release-sandbox")
-	if err := Init(manifestPath); err != nil {
-		t.Fatalf("init changed ref: %v", err)
-	}
-
-	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
-	branch := gitTest(t, repoPath, "branch", "--show-current")
-	if branch != "release-sandbox" {
-		t.Fatalf("branch = %q, want release-sandbox", branch)
-	}
-	content, err := os.ReadFile(filepath.Join(root, "workspace", "app", "README.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "release\n" {
-		t.Fatalf("workspace content = %q, want release", content)
+	for _, relative := range []string{
+		".",
+		"workspace",
+		filepath.Join("workspace", "app"),
+		filepath.Join(".gitplex", "repos", "app"),
+	} {
+		t.Run(relative, func(t *testing.T) {
+			dir := filepath.Join(root, relative)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			chdir(t, dir)
+			err := Init(manifestPath)
+			if err == nil {
+				t.Fatal("init succeeded inside an existing Gitplex project")
+			}
+			want := "cannot initialize inside existing Gitplex project \"" + root + "\""
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+			if dir != root {
+				if _, statErr := os.Stat(filepath.Join(dir, ".gitplex")); !os.IsNotExist(statErr) {
+					t.Fatalf("nested .gitplex was created: %v", statErr)
+				}
+			}
+		})
 	}
 }
 
@@ -425,7 +435,7 @@ func TestInitIgnoresGitIgnoredWorkspaceFiles(t *testing.T) {
 	}
 }
 
-func TestInitRefreshesDirtyWorkspace(t *testing.T) {
+func TestInitRefusalPreservesDirtyWorkspace(t *testing.T) {
 	remote := seedRemoteRepo(t)
 	root := t.TempDir()
 	chdir(t, root)
@@ -440,15 +450,16 @@ func TestInitRefreshesDirtyWorkspace(t *testing.T) {
 	if err := os.WriteFile(workspaceFile, []byte("workspace edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Init(manifestPath); err != nil {
-		t.Fatalf("init with dirty workspace: %v", err)
+	err := Init(manifestPath)
+	if err == nil {
+		t.Fatal("init succeeded inside an existing Gitplex project")
 	}
 	content, readErr := os.ReadFile(workspaceFile)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(content) != "main src\n" {
-		t.Fatalf("workspace content = %q, want refreshed content", content)
+	if string(content) != "workspace edit\n" {
+		t.Fatalf("workspace content = %q, want dirty edit preserved", content)
 	}
 }
 

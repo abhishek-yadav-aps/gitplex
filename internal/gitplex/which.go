@@ -74,21 +74,16 @@ func Which(path string, jsonOutput bool) error {
 }
 
 func loadOwnershipProject() (string, Manifest, State, error) {
-	root, err := os.Getwd()
+	cwd, err := os.Getwd()
 	if err != nil {
 		return "", Manifest{}, State{}, err
 	}
-	for {
-		if _, err := os.Stat(statePath(root)); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return "", Manifest{}, State{}, err
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
+	root, err := findProjectRoot(cwd)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return "", Manifest{}, State{}, fmt.Errorf("not inside a Gitplex project")
 		}
-		root = parent
+		return "", Manifest{}, State{}, err
 	}
 	state, err := loadState(root)
 	if err != nil {

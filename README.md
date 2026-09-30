@@ -4,6 +4,8 @@
 
 The backing clones live in `.gitplex/repos`. The editable combined view lives in `workspace`.
 
+For the complete architecture, manifest schema, workflows, safety notes, and command reference, see [Gitplex: Architecture, Workflows, and Command Reference](docs/ARCHITECTURE_AND_COMMANDS.md).
+
 ## Install
 
 Install the latest macOS or Linux release:

@@ -1,6 +1,7 @@
 package gitplex
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,6 +27,13 @@ type repoStatus struct {
 func Init(manifestPath string) error {
 	root, err := os.Getwd()
 	if err != nil {
+		return err
+	}
+	existingRoot, err := findProjectRoot(root)
+	if err == nil {
+		return fmt.Errorf("cannot initialize inside existing Gitplex project %q", existingRoot)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	manifest, err := loadManifest(manifestPath)
