@@ -33,6 +33,7 @@ type RepoConfig struct {
 	Ref          string                      `yaml:"ref"`
 	Modules      []ModuleMapping             `yaml:"modules"`
 	Dependencies map[string]DependencyConfig `yaml:"dependencies"`
+	AutoModules  bool                        `yaml:"-"`
 }
 
 type ModuleMapping struct {
@@ -110,7 +111,8 @@ func loadManifest(path string) (Manifest, error) {
 			return Manifest{}, fmt.Errorf("repo %q is missing url", name)
 		}
 		if len(repo.Modules) == 0 {
-			return Manifest{}, fmt.Errorf("repo %q must contain at least one module mapping", name)
+			repo.AutoModules = true
+			manifest.Repos[name] = repo
 		}
 		for _, module := range repo.Modules {
 			if module.From == "" || module.To == "" {
@@ -180,6 +182,51 @@ func loadManifest(path string) (Manifest, error) {
 	}
 	if err := validateDestinationMappings(manifest); err != nil {
 		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func resolveAutomaticModules(manifest Manifest, state State) (Manifest, error) {
+	names := make([]string, 0, len(manifest.Repos))
+	for name := range manifest.Repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		repo := manifest.Repos[name]
+		if !repo.AutoModules {
+			continue
+		}
+		repoState, ok := state.Repos[name]
+		if !ok {
+			return Manifest{}, fmt.Errorf("repo %q is missing from state", name)
+		}
+		packageDirs, err := discoverCabalPackageDirs(repoState.Path)
+		if err != nil {
+			return Manifest{}, fmt.Errorf("discover Cabal packages in repo %q: %w", name, err)
+		}
+		roots := map[string]bool{}
+		for _, packageDir := range packageDirs {
+			root := packageDir
+			if packageDir != "." {
+				root = strings.SplitN(filepath.ToSlash(packageDir), "/", 2)[0]
+			}
+			roots[root] = true
+		}
+		if len(roots) == 0 {
+			return Manifest{}, fmt.Errorf("repo %q has no Cabal packages; add modules explicitly for a non-Cabal repository", name)
+		}
+		for root := range roots {
+			repo.Modules = append(repo.Modules, ModuleMapping{From: root, To: root})
+		}
+		sort.Slice(repo.Modules, func(i, j int) bool {
+			return repo.Modules[i].From < repo.Modules[j].From
+		})
+		manifest.Repos[name] = repo
+	}
+	if err := validateDestinationMappings(manifest); err != nil {
+		return Manifest{}, fmt.Errorf("automatically discovered module roots overlap; add explicit modules to resolve the conflict: %w", err)
 	}
 	return manifest, nil
 }

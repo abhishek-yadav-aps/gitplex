@@ -76,6 +76,11 @@ func Run(args []string) error {
 			return err
 		}
 		return InstallExtensions()
+	case "update":
+		if err := parseUpdateArgs(args[1:]); err != nil {
+			return err
+		}
+		return Update()
 	case "pull":
 		return Pull()
 	case "stash":
@@ -213,6 +218,13 @@ func parseShellInitArgs(args []string) error {
 func parseInstallExtensionsArgs(args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("usage: gitplex install-extensions")
+	}
+	return nil
+}
+
+func parseUpdateArgs(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: gitplex update")
 	}
 	return nil
 }
@@ -439,6 +451,7 @@ var commandHelps = []commandHelp{
 	{"gitplex affected [repo...] [--json]", "Show directly changed repos and their dependent cascade."},
 	{"gitplex doctor", "Run preflight checks for tools, manifest graph, workspace sync, and repo state."},
 	{"gitplex install-extensions", "Install the bundled Gitplex extension into VS Code."},
+	{"gitplex update", "Install the latest Gitplex release over the current executable."},
 	{"gitplex pull", "Pull latest changes for backing repos and refresh the generated workspace."},
 	{"gitplex stash [git-stash-args...]", "Run git stash inside the generated workspace only."},
 	{"gitplex build", "Run the normal workspace build command."},

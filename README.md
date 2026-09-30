@@ -30,6 +30,14 @@ GITPLEX_INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.
 
 You can also download the macOS or Linux archive directly from GitHub Releases and put the `gitplex` binary somewhere on your `PATH`.
 
+After Gitplex is installed, update that executable to the latest GitHub release with:
+
+```bash
+gitplex update
+```
+
+The command uses the same GitHub Releases download as the installer above. It replaces the executable used to invoke Gitplex and asks for `sudo` when its install directory requires elevated permissions.
+
 ## Release
 
 Releases are built by GitHub Actions when a version tag is pushed:
@@ -92,7 +100,7 @@ The manifest has three main parts:
 
 - `workspace`: where the merged working tree should be created
 - `build`: optional build-time configuration, such as a post-build cache push command
-- `repos`: the backing repositories, their refs, their module mappings, and dependency order
+- `repos`: the backing repositories and refs, with optional module mappings and dependency order
 - `workspace_files`: optional root-level files or directories to copy into the merged workspace from one of the backing repos
 
 To push successful build outputs to an external cache, configure a command array under `build.cache_push_command`:
@@ -125,7 +133,34 @@ build:
 
 `gitplex build` checks the cache command first and skips setup when it is already available. Otherwise, it runs every setup command inside the generated workspace before starting the Nix build. After a successful build, it runs `cache_push_command` there too. `gitplex true-build` does not set up or push to the cache.
 
-`gitplex` always generates a merged `cabal.project` by scanning for `.cabal` files inside the workspace. That keeps the package list generic.
+For the common case, each repository needs only a URL and branch/ref:
+
+```yaml
+workspace: workspace
+repos:
+  app:
+    url: git@github.com:example/app.git
+    ref: feature/my-branch
+  shared-libraries:
+    url: git@github.com:example/shared-libraries.git
+    ref: main
+```
+
+When `modules` is omitted, Gitplex recursively discovers every `.cabal` file and unions its top-level package roots directly into the workspace. For example, packages under `euler-lsp/app`, `euler-credit-db/lib`, and `euler-lsp-api-gateway/src` appear as `workspace/app`, `workspace/lib`, and `workspace/src`; repository names are not added to the paths. The merged `cabal.project` package list is generated from the resulting layout automatically.
+
+Automatically discovered roots must not overlap across repositories. If two repositories both contribute the same root directory, Gitplex reports the conflict and requires explicit `modules` mappings instead of silently overwriting one repository with another.
+
+`modules` remains available as an advanced override when only part of a repository should appear in the workspace or a different destination is required:
+
+```yaml
+repos:
+  app:
+    url: git@github.com:example/app.git
+    ref: main
+    modules:
+      - from: services/api
+        to: app-api
+```
 
 For Nix-based Haskell workspaces, use `workspace_files` to copy the repo-specific Nix scaffolding you want to reuse, for example:
 

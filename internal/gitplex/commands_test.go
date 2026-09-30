@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,51 @@ func TestInitRefusesInsideExistingProject(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInitDiscoversCabalPackagesWithoutModuleMappings(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	for path, contents := range map[string]string{
+		"library-one/library-one.cabal":            "name: library-one\nversion: 0.1.0\n",
+		"components/library-two/library-two.cabal": "name: library-two\nversion: 0.1.0\n",
+	} {
+		fullPath := filepath.Join(remote, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitTest(t, remote, "add", ".")
+	gitTest(t, remote, "commit", "-m", "add cabal packages")
+
+	root := t.TempDir()
+	chdir(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeAutomaticManifest(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	project, err := os.ReadFile(filepath.Join(root, "workspace", "cabal.project"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, packageDir := range []string{"library-one", "components/library-two"} {
+		if !strings.Contains(string(project), "  "+packageDir+"\n") {
+			t.Fatalf("cabal.project missing automatically discovered package %q:\n%s", packageDir, project)
+		}
+	}
+
+	_, manifest, _, err := loadProject()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModuleMapping{{From: "components", To: "components"}, {From: "library-one", To: "library-one"}}
+	if !reflect.DeepEqual(manifest.Repos["app"].Modules, want) {
+		t.Fatalf("automatic modules = %+v, want %+v", manifest.Repos["app"].Modules, want)
 	}
 }
 
@@ -942,6 +988,36 @@ func TestRebaseSingleRepoOntoBranchAndRefreshesWorkspace(t *testing.T) {
 	}
 	if string(libContent) != "main\n" {
 		t.Fatalf("lib workspace content = %q, want main", libContent)
+	}
+}
+
+func TestRebaseUnshallowsShallowBackingRepo(t *testing.T) {
+	remote := seedRemoteRepo(t)
+	root := t.TempDir()
+	chdir(t, root)
+
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifest(t, manifestPath, "file://"+remote, "release-sandbox")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
+	if shallow := gitTest(t, repoPath, "rev-parse", "--is-shallow-repository"); shallow != "true" {
+		t.Fatalf("shallow repository = %q, want true", shallow)
+	}
+	if err := Branch("feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rebase("app", "main"); err != nil {
+		t.Fatalf("rebase shallow repo: %v", err)
+	}
+	if shallow := gitTest(t, repoPath, "rev-parse", "--is-shallow-repository"); shallow != "false" {
+		t.Fatalf("shallow repository after rebase = %q, want false", shallow)
+	}
+	if mergeBase := gitTest(t, repoPath, "merge-base", "HEAD", "origin/main"); mergeBase != gitTest(t, repoPath, "rev-parse", "origin/main") {
+		t.Fatalf("merge base = %s, want origin/main", mergeBase)
 	}
 }
 
@@ -2457,6 +2533,14 @@ func loadProjectForTest(t *testing.T, root string) (Manifest, State) {
 func writeManifest(t *testing.T, path, remote, ref string) {
 	t.Helper()
 	data := []byte("workspace: workspace\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n    modules:\n      - from: .\n        to: app\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeAutomaticManifest(t *testing.T, path, remote, ref string) {
+	t.Helper()
+	data := []byte("workspace: workspace\n\nrepos:\n  app:\n    url: " + remote + "\n    ref: " + ref + "\n")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

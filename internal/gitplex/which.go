@@ -90,6 +90,10 @@ func loadOwnershipProject() (string, Manifest, State, error) {
 		return "", Manifest{}, State{}, err
 	}
 	manifest, err := loadManifest(state.ManifestPath)
+	if err != nil {
+		return "", Manifest{}, State{}, err
+	}
+	manifest, err = resolveAutomaticModules(manifest, state)
 	return root, manifest, state, err
 }
 
