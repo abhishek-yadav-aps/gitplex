@@ -221,7 +221,7 @@ Before changing a backing repository, `gitplex push` verifies that its branch is
 
 If a remote rejects a push or the operation is interrupted, fix the external problem and run `gitplex push --resume`. Gitplex reuses the existing local commit instead of creating a duplicate, verifies already-pushed repositories, and continues the dependency order. `gitplex status` displays the journal phase and local ahead/behind counts so unpublished commits are not reported as clean.
 
-Rebase and cherry-pick write `.gitplex/conflict.json` before changing backing repositories. If Git reports a conflict, resolve and stage it in the named backing repository and run the matching `--continue`; `--abort` aborts Git's active operation, restores every repository touched by the workflow to its original HEAD, and refreshes the workspace.
+Rebase and cherry-pick write `.gitplex/conflict.json` before changing backing repositories. If Git reports a conflict, resolve it and run the matching `gitplex rebase --continue` or `gitplex cherry-pick --continue` from anywhere inside the Gitplex project. The continue command runs `git add .` in the active backing repository automatically before continuing Git's operation. `--abort` aborts Git's active operation, restores every repository touched by the workflow to its original HEAD, and refreshes the workspace.
 
 ## File ownership
 
