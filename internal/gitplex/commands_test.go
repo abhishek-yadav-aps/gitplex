@@ -212,7 +212,6 @@ func TestCherryPickConflictCanContinue(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("resolved\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitTest(t, repoPath, "add", "README.md")
 	if err := ContinueConflict("cherry-pick"); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +269,6 @@ func TestRebaseConflictCanContinue(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("rebased\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitTest(t, repoPath, "add", "README.md")
 	if err := ContinueConflict("rebase"); err != nil {
 		t.Fatal(err)
 	}

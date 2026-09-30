@@ -116,8 +116,11 @@ func ContinueConflict(expectedOperation string) error {
 		return err
 	}
 	if active {
+		if err := runGitAndPrint(repoPath, "add", "."); err != nil {
+			return fmt.Errorf("stage resolved files in %s: %w", name, err)
+		}
 		if err := runGitAndPrint(repoPath, "-c", "core.editor=true", journal.Operation, "--continue"); err != nil {
-			return fmt.Errorf("%s still needs resolution in %s; resolve and stage files, then retry --continue: %w", journal.Operation, name, err)
+			return fmt.Errorf("%s still needs resolution in %s; resolve files, then retry --continue: %w", journal.Operation, name, err)
 		}
 	} else if journal.Operation == "rebase" {
 		if err := fetchBranchForRebase(name, repoPath, journal.Target); err != nil {
@@ -267,7 +270,7 @@ func finishConflictWorkflow(root string, manifest Manifest, state State, baselin
 }
 
 func conflictInstruction(operation, name string, err error) error {
-	return fmt.Errorf("%s stopped in repo %q: %w; resolve and stage files, then run gitplex %s --continue, or run gitplex %s --abort", operation, name, err, operationCommand(operation), operationCommand(operation))
+	return fmt.Errorf("%s stopped in repo %q: %w; resolve files, then run gitplex %s --continue (which stages them automatically), or run gitplex %s --abort", operation, name, err, operationCommand(operation), operationCommand(operation))
 }
 
 func operationCommand(operation string) string {
