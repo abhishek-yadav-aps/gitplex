@@ -14,7 +14,12 @@ import (
 var (
 	selfPathPattern     = regexp.MustCompile(`\$\{inputs\.self\}/([A-Za-z0-9._/\-]+)`)
 	relativePathPattern = regexp.MustCompile(`\./[A-Za-z0-9._/\-]+`)
+	haskellInputPattern = regexp.MustCompile(`\binputs\.([A-Za-z0-9-]+)`)
+	autoWirePattern     = regexp.MustCompile(`(?s)autoWire\s*=\s*\[(.*?)\]\s*;`)
+	quotedStringPattern = regexp.MustCompile(`"([^"]+)"`)
 )
+
+const generatedHaskellProjectFragmentPrefix = "haskell-project.gitplex-"
 
 func generateWorkspaceProject(root string, manifest Manifest, state State) error {
 	return generateWorkspaceProjectWithBaseline(root, manifest, state, true)
@@ -42,6 +47,11 @@ func generateWorkspaceProjectWithBaseline(root string, manifest Manifest, state 
 	if err != nil {
 		return err
 	}
+	projectInputs, err := discoverHaskellProjectInputs(manifest, state)
+	if err != nil {
+		return err
+	}
+	externalDeps = uniqueSortedStrings(append(externalDeps, projectInputs...))
 	fmt.Println("patching workspace flake")
 	if _, err := patchWorkspaceFlake(workspacePath, manifest, state, externalDeps); err != nil {
 		return err
@@ -284,7 +294,7 @@ func discoverWorkspaceFileDependencies(repoRoot string, file WorkspaceFile) ([]W
 
 func patchWorkspaceHaskellProject(workspacePath string, manifest Manifest, state State, packageDirs []string) error {
 	projectPath := filepath.Join(workspacePath, "nix", "haskell-project.nix")
-	data, err := os.ReadFile(projectPath)
+	baseData, err := os.ReadFile(projectPath)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -292,34 +302,224 @@ func patchWorkspaceHaskellProject(workspacePath string, manifest Manifest, state
 		return err
 	}
 
-	lines := strings.Split(string(data), "\n")
-	lines = replaceHaskellProjectImports(lines, rootRepoProjectImports(manifest, state))
-	start := -1
-	end := -1
-	for i, line := range lines {
-		if strings.Contains(line, "fileset = fs.unions [") {
-			start = i
-			continue
-		}
-		if start >= 0 && strings.TrimSpace(line) == "];" {
-			end = i
+	fragments, err := collectHaskellProjectFragments(manifest, state)
+	if err != nil {
+		return err
+	}
+	baseIncluded := false
+	for _, fragment := range fragments {
+		if string(fragment.data) == string(baseData) {
+			baseIncluded = true
 			break
 		}
 	}
-	if start == -1 || end == -1 || end <= start {
-		return os.WriteFile(projectPath, []byte(strings.Join(lines, "\n")), 0o644)
+	if !baseIncluded {
+		fragments = append(fragments, haskellProjectFragment{repo: "workspace-base", data: baseData})
 	}
 
-	indent := leadingWhitespace(lines[start]) + "  "
-	replacement := make([]string, 0, len(packageDirs)+1)
-	for _, path := range workspaceSourcePaths(packageDirs) {
-		replacement = append(replacement, fmt.Sprintf("%s../%s", indent, path))
+	nixDir := filepath.Dir(projectPath)
+	if err := removeGeneratedHaskellProjectFragments(nixDir); err != nil {
+		return err
+	}
+	imports := mergedHaskellProjectImports(fragments, manifest)
+	autoWire := mergedHaskellProjectAutoWire(fragments)
+	fragmentNames := make([]string, 0, len(fragments))
+	for i, fragment := range fragments {
+		name := fmt.Sprintf("%s%02d-%s.nix", generatedHaskellProjectFragmentPrefix, i, safeGeneratedName(fragment.repo))
+		fragmentLines := replaceHaskellProjectImports(strings.Split(string(fragment.data), "\n"), nil)
+		fragmentLines = removeNixAssignment(fragmentLines, "projectRoot")
+		fragmentData := []byte(strings.Join(fragmentLines, "\n"))
+		if err := os.WriteFile(filepath.Join(nixDir, name), fragmentData, 0o644); err != nil {
+			return fmt.Errorf("write Haskell project fragment for %s: %w", fragment.repo, err)
+		}
+		fragmentNames = append(fragmentNames, name)
 	}
 
-	updated := append([]string{}, lines[:start+1]...)
-	updated = append(updated, replacement...)
-	updated = append(updated, lines[end:]...)
-	return os.WriteFile(projectPath, []byte(strings.Join(updated, "\n")), 0o644)
+	generated := renderWorkspaceHaskellProject(fragmentNames, workspaceSourcePaths(packageDirs), imports, autoWire)
+	return os.WriteFile(projectPath, []byte(generated), 0o644)
+}
+
+type haskellProjectFragment struct {
+	repo string
+	data []byte
+}
+
+func collectHaskellProjectFragments(manifest Manifest, state State) ([]haskellProjectFragment, error) {
+	order, err := topoOrder(manifest)
+	if err != nil {
+		return nil, err
+	}
+	var fragments []haskellProjectFragment
+	for _, name := range order {
+		repoState, ok := state.Repos[name]
+		if !ok {
+			return nil, fmt.Errorf("repo %q is missing from state", name)
+		}
+		data, err := os.ReadFile(filepath.Join(repoState.Path, "nix", "haskell-project.nix"))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read Haskell project from %s: %w", name, err)
+		}
+		fragments = append(fragments, haskellProjectFragment{repo: name, data: data})
+	}
+	return fragments, nil
+}
+
+func removeGeneratedHaskellProjectFragments(nixDir string) error {
+	entries, err := os.ReadDir(nixDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), generatedHaskellProjectFragmentPrefix) || !strings.HasSuffix(entry.Name(), ".nix") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(nixDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func safeGeneratedName(name string) string {
+	return regexp.MustCompile(`[^A-Za-z0-9._-]+`).ReplaceAllString(name, "_")
+}
+
+func removeNixAssignment(lines []string, attribute string) []string {
+	start := -1
+	depth := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if start == -1 {
+			if !strings.HasPrefix(trimmed, attribute+" =") {
+				continue
+			}
+			start = i
+			if equals := strings.Index(line, "="); equals >= 0 {
+				depth = nixDelimiterDepth(line[equals+1:])
+			}
+			if depth == 0 && strings.HasSuffix(trimmed, ";") {
+				return append(append([]string{}, lines[:start]...), lines[i+1:]...)
+			}
+			continue
+		}
+
+		depth += nixDelimiterDepth(line)
+		if depth == 0 && strings.HasSuffix(trimmed, ";") {
+			return append(append([]string{}, lines[:start]...), lines[i+1:]...)
+		}
+	}
+	return lines
+}
+
+func nixDelimiterDepth(line string) int {
+	depth := 0
+	inString := false
+	escaped := false
+	for _, r := range line {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		if r == '"' {
+			inString = true
+			continue
+		}
+		switch r {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+	}
+	return depth
+}
+
+func mergedHaskellProjectImports(fragments []haskellProjectFragment, manifest Manifest) []string {
+	internal := mergedRepoFlakeInputs(manifest)
+	seen := map[string]bool{}
+	var imports []string
+	for _, fragment := range fragments {
+		for _, line := range extractHaskellProjectImports(strings.Split(string(fragment.data), "\n")) {
+			trimmed := strings.TrimSpace(line)
+			match := haskellInputPattern.FindStringSubmatch(trimmed)
+			if len(match) > 1 && internal[match[1]] {
+				continue
+			}
+			if trimmed == "" || seen[trimmed] {
+				continue
+			}
+			seen[trimmed] = true
+			imports = append(imports, trimmed)
+		}
+	}
+	return imports
+}
+
+func mergedHaskellProjectAutoWire(fragments []haskellProjectFragment) []string {
+	seen := map[string]bool{}
+	var values []string
+	for _, fragment := range fragments {
+		match := autoWirePattern.FindStringSubmatch(string(fragment.data))
+		if len(match) < 2 {
+			continue
+		}
+		for _, quoted := range quotedStringPattern.FindAllStringSubmatch(match[1], -1) {
+			if len(quoted) < 2 || seen[quoted[1]] {
+				continue
+			}
+			seen[quoted[1]] = true
+			values = append(values, quoted[1])
+		}
+	}
+	return values
+}
+
+func renderWorkspaceHaskellProject(fragmentNames, sourcePaths, imports, autoWire []string) string {
+	var b strings.Builder
+	b.WriteString("{ inputs, ... }:\n{\n")
+	b.WriteString("  # Generated by Gitplex. Repository modules are composed below.\n")
+	b.WriteString("  imports = [\n")
+	for _, name := range fragmentNames {
+		fmt.Fprintf(&b, "    ./%s\n", name)
+	}
+	b.WriteString("  ];\n\n")
+	b.WriteString("  perSystem = { pkgs-latest, lib, ... }: {\n")
+	b.WriteString("    haskellProjects.default = let fs = pkgs-latest.lib.fileset; in {\n")
+	b.WriteString("      projectRoot = lib.mkForce (builtins.toString (fs.toSource {\n")
+	b.WriteString("        root = ../.;\n")
+	b.WriteString("        fileset = fs.unions [\n")
+	for _, path := range sourcePaths {
+		fmt.Fprintf(&b, "          ../%s\n", path)
+	}
+	b.WriteString("        ];\n")
+	b.WriteString("      }));\n\n")
+	b.WriteString("      imports = [\n")
+	for _, importLine := range imports {
+		fmt.Fprintf(&b, "        %s\n", importLine)
+	}
+	b.WriteString("      ];\n\n")
+	b.WriteString("      autoWire = lib.mkForce [")
+	for _, value := range autoWire {
+		fmt.Fprintf(&b, " %q", value)
+	}
+	b.WriteString(" ];\n")
+	b.WriteString("    };\n")
+	b.WriteString("  };\n")
+	b.WriteString("}\n")
+	return b.String()
 }
 
 func workspaceSourcePaths(packageDirs []string) []string {
@@ -336,6 +536,36 @@ func workspaceSourcePaths(packageDirs []string) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func discoverHaskellProjectInputs(manifest Manifest, state State) ([]string, error) {
+	fragments, err := collectHaskellProjectFragments(manifest, state)
+	if err != nil {
+		return nil, err
+	}
+	var inputs []string
+	for _, fragment := range fragments {
+		for _, match := range haskellInputPattern.FindAllStringSubmatch(string(fragment.data), -1) {
+			if len(match) > 1 && match[1] != "self" {
+				inputs = append(inputs, match[1])
+			}
+		}
+	}
+	return uniqueSortedStrings(inputs), nil
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	sort.Strings(unique)
+	return unique
 }
 
 func discoverExternalPackageDeps(workspacePath string, packageDirs []string) ([]string, error) {
@@ -512,9 +742,6 @@ func extractHaskellProjectImports(lines []string) []string {
 }
 
 func replaceHaskellProjectImports(lines []string, imports []string) []string {
-	if len(imports) == 0 {
-		return lines
-	}
 	start, end := findListBlock(lines, "imports = [")
 	if start == -1 || end == -1 || end <= start {
 		return lines

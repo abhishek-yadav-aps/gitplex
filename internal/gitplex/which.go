@@ -166,6 +166,13 @@ func lookupOwnership(path string, manifest Manifest, state State) (FileOwnership
 	case "flake.nix", "nix/haskell-project.nix":
 		result.Generated = true
 	}
+	if strings.HasPrefix(path, "nix/"+generatedHaskellProjectFragmentPrefix) && strings.HasSuffix(path, ".nix") {
+		result.Generated = true
+		result.Copied = false
+		result.Repo = ""
+		result.Path = ""
+		result.SourcePath = ""
+	}
 	if result.Generated {
 		result.Kind = "generated"
 	}

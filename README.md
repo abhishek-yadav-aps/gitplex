@@ -144,6 +144,8 @@ workspace_files:
 This makes Gitplex generic for Haskell + Nix repos without baking any company- or project-specific flake contents into the tool itself.
 When a repo contributes root `flake.nix` through `workspace_files`, Gitplex also copies that repo's root `.envrc` into the generated workspace if it exists.
 
+When multiple backing repositories contain `nix/haskell-project.nix`, Gitplex copies each one into the generated workspace as a module fragment and writes an aggregator at `nix/haskell-project.nix`. Nix then merges repository-specific package sources, settings, defaults, and local bindings. Gitplex overrides only workspace-wide values: the discovered package source tree, the deduplicated `autoWire` list, and external Haskell project imports. Imports for repositories already merged into the workspace are omitted to avoid wiring the same local packages twice.
+
 `gitplex branch` creates or resets the same branch in every backing repo and records it for later pushes.
 
 `gitplex checkout <branch>` checks out every backing repo to the branch, then refreshes the generated workspace. Use `gitplex checkout <repo> <branch>` to checkout just one repo. The command refuses to run if the generated workspace or selected backing repo has uncommitted changes.
