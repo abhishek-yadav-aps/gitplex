@@ -2,6 +2,8 @@
 
 Shows the active file's source repository, kind, and publishing eligibility in the VS Code status bar. Hover for the original path and generated/copied flags; click to open the full report in the Gitplex Ownership output panel.
 
+The extension hides `.gitplex` backing data from VS Code Explorer, search, and file watching by default. The files remain on disk for Gitplex internals.
+
 Build/install a Gitplex binary that supports `which --json`, and put it on PATH or set the VS Code user setting `gitplex.executablePath` to its absolute path.
 
 To install the extension from a Gitplex binary, run:

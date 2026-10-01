@@ -10,6 +10,11 @@
   "main": "./extension.js",
   "capabilities": { "untrustedWorkspaces": { "supported": false } },
   "contributes": {
+    "configurationDefaults": {
+      "files.exclude": { "**/.gitplex": true },
+      "search.exclude": { "**/.gitplex": true },
+      "files.watcherExclude": { "**/.gitplex/**": true }
+    },
     "commands": [{ "command": "gitplex.showOwnership", "title": "Gitplex: Show File Ownership" }],
     "configuration": {
       "title": "Gitplex",

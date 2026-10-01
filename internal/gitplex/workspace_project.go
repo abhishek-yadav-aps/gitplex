@@ -148,25 +148,12 @@ package *
 }
 
 func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([]string, error) {
-	seen := map[string]bool{}
-	queue := make([]WorkspaceFile, 0, len(manifest.WorkspaceFiles))
-	queue = append(queue, manifest.WorkspaceFiles...)
-	rootFiles, err := implicitWorkspaceRootFiles(manifest, state)
+	files, err := resolvedWorkspaceFiles(manifest, state)
 	if err != nil {
 		return nil, err
 	}
-	queue = append(queue, rootFiles...)
 	var copied []string
-
-	for len(queue) > 0 {
-		file := queue[0]
-		queue = queue[1:]
-		dstKey := filepath.ToSlash(file.To)
-		if seen[dstKey] {
-			continue
-		}
-		seen[dstKey] = true
-
+	for _, file := range files {
 		repoState, ok := state.Repos[file.Repo]
 		if !ok {
 			return nil, fmt.Errorf("workspace file repo %q is missing from state", file.Repo)
@@ -179,17 +166,44 @@ func syncWorkspaceFiles(workspacePath string, manifest Manifest, state State) ([
 		if err := copyTree(src, dst); err != nil {
 			return nil, fmt.Errorf("copy workspace file %s from %s: %w", file.To, file.Repo, err)
 		}
-		copied = append(copied, dstKey)
+		copied = append(copied, filepath.ToSlash(file.To))
+	}
+	sort.Strings(copied)
+	return copied, nil
+}
 
+func resolvedWorkspaceFiles(manifest Manifest, state State) ([]WorkspaceFile, error) {
+	seen := map[string]bool{}
+	queue := make([]WorkspaceFile, 0, len(manifest.WorkspaceFiles))
+	queue = append(queue, manifest.WorkspaceFiles...)
+	rootFiles, err := implicitWorkspaceRootFiles(manifest, state)
+	if err != nil {
+		return nil, err
+	}
+	queue = append(queue, rootFiles...)
+	var files []WorkspaceFile
+
+	for len(queue) > 0 {
+		file := queue[0]
+		queue = queue[1:]
+		dstKey := filepath.ToSlash(file.To)
+		if seen[dstKey] {
+			continue
+		}
+		seen[dstKey] = true
+		files = append(files, file)
+
+		repoState, ok := state.Repos[file.Repo]
+		if !ok {
+			return nil, fmt.Errorf("workspace file repo %q is missing from state", file.Repo)
+		}
 		deps, err := discoverWorkspaceFileDependencies(repoState.Path, file)
 		if err != nil {
 			return nil, err
 		}
 		queue = append(queue, deps...)
 	}
-
-	sort.Strings(copied)
-	return copied, nil
+	return files, nil
 }
 
 func implicitWorkspaceRootFiles(manifest Manifest, state State) ([]WorkspaceFile, error) {

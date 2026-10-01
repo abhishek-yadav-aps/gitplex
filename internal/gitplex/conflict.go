@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const conflictJournalVersion = 1
@@ -116,10 +117,16 @@ func ContinueConflict(expectedOperation string) error {
 		return err
 	}
 	if active {
+		if err := syncConflictWorkspaceToRepo(root, manifest, state, name); err != nil {
+			return err
+		}
 		if err := runGitAndPrint(repoPath, "add", "."); err != nil {
 			return fmt.Errorf("stage resolved files in %s: %w", name, err)
 		}
 		if err := runGitAndPrint(repoPath, "-c", "core.editor=true", journal.Operation, "--continue"); err != nil {
+			if syncErr := syncConflictToWorkspace(root, manifest, state); syncErr != nil {
+				return fmt.Errorf("%s still needs resolution in %s; also failed to sync the new conflict to the workspace: %v: %w", journal.Operation, name, syncErr, err)
+			}
 			return fmt.Errorf("%s still needs resolution in %s; resolve files, then retry --continue: %w", journal.Operation, name, err)
 		}
 	} else if journal.Operation == "rebase" {
@@ -127,11 +134,11 @@ func ContinueConflict(expectedOperation string) error {
 			return err
 		}
 		if err := runGitAndPrint(repoPath, "rebase", "origin/"+journal.Target); err != nil {
-			return conflictInstruction(journal.Operation, name, err)
+			return exposeConflict(root, manifest, state, journal.Operation, name, err)
 		}
 	} else {
 		if err := runGitAndPrint(repoPath, "cherry-pick", journal.Target); err != nil {
-			return conflictInstruction(journal.Operation, name, err)
+			return exposeConflict(root, manifest, state, journal.Operation, name, err)
 		}
 	}
 	if err := finishConflictRepo(name, &state); err != nil {
@@ -150,7 +157,7 @@ func ContinueConflict(expectedOperation string) error {
 			}
 			if err := runGitAndPrint(repoPath, "rebase", "origin/"+journal.Target); err != nil {
 				_ = saveConflictJournal(root, journal)
-				return conflictInstruction(journal.Operation, name, err)
+				return exposeConflict(root, manifest, state, journal.Operation, name, err)
 			}
 			if err := finishConflictRepo(name, &state); err != nil {
 				return err
@@ -176,7 +183,7 @@ func finalizeConflictWorkflow(root string, manifest Manifest, state State, journ
 			return err
 		}
 	}
-	return finishConflictWorkflow(root, manifest, state, journal.Operation != "cherry-pick")
+	return finishConflictWorkflow(root, manifest, state, true)
 }
 
 func gitOperationInProgress(repoPath, operation string) (bool, error) {
@@ -269,8 +276,86 @@ func finishConflictWorkflow(root string, manifest Manifest, state State, baselin
 	return nil
 }
 
+func exposeConflict(root string, manifest Manifest, state State, operation, name string, operationErr error) error {
+	if err := syncConflictToWorkspace(root, manifest, state); err != nil {
+		return fmt.Errorf("%s; also failed to sync the conflict to the workspace: %v", conflictInstruction(operation, name, operationErr), err)
+	}
+	return conflictInstruction(operation, name, operationErr)
+}
+
+func syncConflictToWorkspace(root string, manifest Manifest, state State) error {
+	if err := refreshWorkspace(root, manifest, state); err != nil {
+		return err
+	}
+	return syncConflictedWorkspaceFilesToWorkspace(filepath.Join(root, manifest.Workspace), manifest, state)
+}
+
+func syncConflictWorkspaceToRepo(root string, manifest Manifest, state State, name string) error {
+	if err := syncWorkspaceToRepo(root, manifest, state, name); err != nil {
+		return err
+	}
+	return syncConflictedWorkspaceFilesToRepo(filepath.Join(root, manifest.Workspace), manifest, state, name)
+}
+
+func syncConflictedWorkspaceFilesToWorkspace(workspacePath string, manifest Manifest, state State) error {
+	files, err := conflictedWorkspaceFiles(manifest, state, "")
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		src := filepath.Join(state.Repos[file.Repo].Path, file.From)
+		dst := filepath.Join(workspacePath, file.To)
+		if err := removeGeneratedPath(dst); err != nil {
+			return err
+		}
+		if err := copyTree(src, dst); err != nil {
+			return fmt.Errorf("copy conflicted workspace file %s from %s: %w", file.To, file.Repo, err)
+		}
+	}
+	return nil
+}
+
+func syncConflictedWorkspaceFilesToRepo(workspacePath string, manifest Manifest, state State, name string) error {
+	files, err := conflictedWorkspaceFiles(manifest, state, name)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		src := filepath.Join(workspacePath, file.To)
+		dst := filepath.Join(state.Repos[file.Repo].Path, file.From)
+		if err := mirrorTree(src, dst); err != nil {
+			return fmt.Errorf("sync conflicted workspace file %s to repo %s: %w", file.To, file.Repo, err)
+		}
+	}
+	return nil
+}
+
+func conflictedWorkspaceFiles(manifest Manifest, state State, name string) ([]WorkspaceFile, error) {
+	files, err := resolvedWorkspaceFiles(manifest, state)
+	if err != nil {
+		return nil, err
+	}
+	var conflicted []WorkspaceFile
+	for _, file := range files {
+		if name != "" && file.Repo != name {
+			continue
+		}
+		paths, err := git(state.Repos[file.Repo].Path, "diff", "--name-only", "--diff-filter=U")
+		if err != nil {
+			return nil, fmt.Errorf("list conflicted paths in repo %q: %w", file.Repo, err)
+		}
+		for _, path := range strings.Fields(paths) {
+			if pathsOverlap(file.From, path) {
+				conflicted = append(conflicted, file)
+				break
+			}
+		}
+	}
+	return conflicted, nil
+}
+
 func conflictInstruction(operation, name string, err error) error {
-	return fmt.Errorf("%s stopped in repo %q: %w; resolve files, then run gitplex %s --continue (which stages them automatically), or run gitplex %s --abort", operation, name, err, operationCommand(operation), operationCommand(operation))
+	return fmt.Errorf("%s stopped in repo %q: %w; resolve files in the workspace, then run gitplex %s --continue (which syncs and stages them automatically), or run gitplex %s --abort", operation, name, err, operationCommand(operation), operationCommand(operation))
 }
 
 func operationCommand(operation string) string {

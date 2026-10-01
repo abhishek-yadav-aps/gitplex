@@ -8,9 +8,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	vscodeextension "github.com/abhishek-yadav-aps/gitplex/editors/vscode"
 )
 
 func TestBuildVSCodeExtension(t *testing.T) {
+	for _, setting := range []string{`"files.exclude"`, `"search.exclude"`, `"files.watcherExclude"`, `"**/.gitplex"`} {
+		if !bytes.Contains(vscodeextension.PackageJSON, []byte(setting)) {
+			t.Fatalf("extension package is missing default %s", setting)
+		}
+	}
 	data, manifest, err := buildVSCodeExtension()
 	if err != nil {
 		t.Fatalf("buildVSCodeExtension: %v", err)

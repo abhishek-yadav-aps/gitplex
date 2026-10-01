@@ -43,6 +43,9 @@ func Init(manifestPath string) error {
 	if err := os.MkdirAll(filepath.Join(root, ".gitplex", "repos"), 0o755); err != nil {
 		return err
 	}
+	if err := ensureVSCodeProjectSettings(root); err != nil {
+		return err
+	}
 	if err := copyFile(manifestPath, filepath.Join(root, ".gitplex", "manifest.yaml"), 0o644); err != nil {
 		return err
 	}
@@ -495,7 +498,7 @@ func Rebase(repoName, branch string) error {
 			return err
 		}
 		if err := runGitAndPrint(repoPath, "rebase", "origin/"+branch); err != nil {
-			return conflictInstruction("rebase", name, err)
+			return exposeConflict(root, manifest, state, "rebase", name, err)
 		}
 		head, err := gitHead(repoPath)
 		if err != nil {
@@ -589,7 +592,7 @@ func CherryPick(repoName, commit string) error {
 	}
 	fmt.Printf("cherry-picking %s into %s\n", commit, name)
 	if err := runGitAndPrint(repoPath, "cherry-pick", commit); err != nil {
-		return conflictInstruction("cherry-pick", name, err)
+		return exposeConflict(root, manifest, state, "cherry-pick", name, err)
 	}
 	head, err := gitHead(repoPath)
 	if err != nil {
@@ -723,6 +726,9 @@ func WorkspaceModePath(force bool) (string, error) {
 	}
 	root, manifest, state, err := loadProject()
 	if err != nil {
+		return "", err
+	}
+	if err := ensureVSCodeProjectSettings(root); err != nil {
 		return "", err
 	}
 	workspacePath := filepath.Join(root, manifest.Workspace)
@@ -1260,6 +1266,25 @@ func syncWorkspaceToRepo(root string, manifest Manifest, state State, name strin
 		dst := filepath.Join(repoPath, module.From)
 		if err := mirrorTree(src, dst); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func syncWorkspaceFilesToRepo(root string, manifest Manifest, state State, name string) error {
+	files, err := resolvedWorkspaceFiles(manifest, state)
+	if err != nil {
+		return err
+	}
+	workspacePath := filepath.Join(root, manifest.Workspace)
+	for _, file := range files {
+		if file.Repo != name {
+			continue
+		}
+		src := filepath.Join(workspacePath, file.To)
+		dst := filepath.Join(state.Repos[name].Path, file.From)
+		if err := mirrorTree(src, dst); err != nil {
+			return fmt.Errorf("sync workspace file %s to repo %s: %w", file.To, name, err)
 		}
 	}
 	return nil

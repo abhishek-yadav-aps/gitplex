@@ -221,7 +221,7 @@ Before changing a backing repository, `gitplex push` verifies that its branch is
 
 If a remote rejects a push or the operation is interrupted, fix the external problem and run `gitplex push --resume`. Gitplex reuses the existing local commit instead of creating a duplicate, verifies already-pushed repositories, and continues the dependency order. `gitplex status` displays the journal phase and local ahead/behind counts so unpublished commits are not reported as clean.
 
-Rebase and cherry-pick write `.gitplex/conflict.json` before changing backing repositories. If Git reports a conflict, resolve it and run the matching `gitplex rebase --continue` or `gitplex cherry-pick --continue` from anywhere inside the Gitplex project. The continue command runs `git add .` in the active backing repository automatically before continuing Git's operation. `--abort` aborts Git's active operation, restores every repository touched by the workflow to its original HEAD, and refreshes the workspace.
+Rebase and cherry-pick write `.gitplex/conflict.json` before changing backing repositories. If Git reports a conflict, Gitplex immediately syncs the conflict markers into the generated workspace. Resolve files there and run the matching `gitplex rebase --continue` or `gitplex cherry-pick --continue` from anywhere inside the Gitplex project. The continue command syncs the workspace resolution back into the active backing repository, runs `git add .`, and continues Git's operation. If another conflict occurs, it is synced back into the workspace again. `--abort` aborts Git's active operation, restores every repository touched by the workflow to its original HEAD, and refreshes the workspace.
 
 ## File ownership
 
@@ -236,6 +236,6 @@ Paths are relative to the current directory; absolute paths work too. From insid
 
 The report includes the source repo and repo-relative path, the absolute original path, and separate `generated`, `copied`, and `publishable` flags. Module files are copied and publishable. Workspace support files include explicitly configured copies, implicit root files, and discovered local dependencies. Gitplex-created or patched configuration is marked generated. Files without a mapping are marked unmapped. Publishable means covered by the mappings used by `push`/`amend`; staging is still required. A generated file can also be copied or covered by a module mapping.
 
-The optional [VS Code extension](editors/vscode/README.md) shows ownership for the active file in the status bar, with details on hover and click. See its README for launch and packaging instructions.
+The optional [VS Code extension](editors/vscode/README.md) shows ownership for the active file in the status bar, with details on hover and click. Gitplex also writes project-local VS Code defaults that hide `.gitplex` from Explorer, search, and file watching; existing user-owned `.vscode/settings.json` files are preserved, and the extension supplies the same exclusions as defaults. See its README for launch and packaging instructions.
 
 Install the bundled extension into VS Code with `gitplex install-extensions`.
