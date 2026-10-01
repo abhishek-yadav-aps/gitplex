@@ -208,8 +208,9 @@ func TestCherryPickConflictCanContinue(t *testing.T) {
 	if err := CherryPick("app", commit); err == nil || !strings.Contains(err.Error(), "--continue") {
 		t.Fatalf("cherrypick conflict = %v, want recovery instructions", err)
 	}
-	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
-	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	assertConflictVisibleInWorkspace(t, workspaceFile)
+	if err := os.WriteFile(workspaceFile, []byte("resolved\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := ContinueConflict("cherry-pick"); err != nil {
@@ -224,6 +225,42 @@ func TestCherryPickConflictCanContinue(t *testing.T) {
 	}
 	if string(content) != "resolved\n" {
 		t.Fatalf("workspace content = %q", content)
+	}
+	if status := gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain"); status != "" {
+		t.Fatalf("workspace remains dirty after cherry-pick continuation: %q", status)
+	}
+}
+
+func TestCherryPickConflictLeavesUnconflictedWorkspaceFilesGenerated(t *testing.T) {
+	remote := seedRemoteRepoWithFlake(t)
+	gitTest(t, remote, "checkout", "-b", "conflict-source", "main")
+	if err := os.WriteFile(filepath.Join(remote, "README.md"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, remote, "commit", "-am", "source change")
+	commit := gitTest(t, remote, "rev-parse", "HEAD")
+	gitTest(t, remote, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(remote, "README.md"), []byte("target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, remote, "commit", "-am", "target change")
+
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithWorkspaceFlake(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CherryPick("app", commit); err == nil {
+		t.Fatal("cherrypick succeeded without a conflict")
+	}
+	workspacePath := filepath.Join(root, "workspace")
+	assertConflictVisibleInWorkspace(t, filepath.Join(workspacePath, "app", "README.md"))
+	if status := gitTest(t, workspacePath, "status", "--porcelain"); status != " M app/README.md" {
+		t.Fatalf("workspace status = %q, want only the conflicted module file", status)
 	}
 }
 
@@ -265,8 +302,9 @@ func TestRebaseConflictCanContinue(t *testing.T) {
 	if err := Rebase("app", "release-sandbox"); err == nil || !strings.Contains(err.Error(), "rebase --continue") {
 		t.Fatalf("rebase conflict = %v, want recovery instructions", err)
 	}
-	repoPath := filepath.Join(root, ".gitplex", "repos", "app")
-	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("rebased\n"), 0o644); err != nil {
+	workspaceFile := filepath.Join(root, "workspace", "app", "README.md")
+	assertConflictVisibleInWorkspace(t, workspaceFile)
+	if err := os.WriteFile(workspaceFile, []byte("rebased\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := ContinueConflict("rebase"); err != nil {
@@ -281,6 +319,47 @@ func TestRebaseConflictCanContinue(t *testing.T) {
 	}
 	if _, err := os.Stat(conflictJournalPath(root)); !os.IsNotExist(err) {
 		t.Fatalf("conflict journal remains: %v", err)
+	}
+}
+
+func TestRebaseConflictLeavesUnconflictedWorkspaceFilesGenerated(t *testing.T) {
+	remote := seedRemoteRepoWithFlake(t)
+	gitTest(t, remote, "checkout", "-B", "release-sandbox", "main")
+	if err := os.WriteFile(filepath.Join(remote, "README.md"), []byte("release\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, remote, "commit", "-am", "release change")
+
+	root := t.TempDir()
+	chdir(t, root)
+	prependFakeNix(t, root)
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	writeManifestWithWorkspaceFlake(t, manifestPath, remote, "main")
+	if err := Init(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	commitBackingRepoChange(t, root, "app", "local\n", "local change")
+
+	if err := Rebase("app", "release-sandbox"); err == nil {
+		t.Fatal("rebase succeeded without a conflict")
+	}
+	workspacePath := filepath.Join(root, "workspace")
+	assertConflictVisibleInWorkspace(t, filepath.Join(workspacePath, "app", "README.md"))
+	if status := gitTest(t, workspacePath, "status", "--porcelain"); status != " M app/README.md" {
+		t.Fatalf("workspace status = %q, want only the conflicted module file", status)
+	}
+}
+
+func assertConflictVisibleInWorkspace(t *testing.T, path string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"<<<<<<<", "=======", ">>>>>>>"} {
+		if !strings.Contains(string(content), marker) {
+			t.Fatalf("workspace conflict %s is missing marker %q:\n%s", path, marker, content)
+		}
 	}
 }
 
@@ -1605,21 +1684,16 @@ func TestCherryPickRepoCommitAndRefreshesWorkspace(t *testing.T) {
 		t.Fatalf("state app head = %q, want %q", state.Repos["app"].Head, head)
 	}
 	workspaceStatus := gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
-	if !strings.Contains(workspaceStatus, " M app/README.md") {
-		t.Fatalf("workspace git status = %q, want app/README.md modified", workspaceStatus)
+	if workspaceStatus != "" {
+		t.Fatalf("workspace git status = %q, want clean", workspaceStatus)
 	}
 
-	gitTest(t, filepath.Join(root, "workspace"), "checkout", "--", ".")
+	if err := CherryPick("app", commit); err != nil {
+		t.Fatalf("repeat cherrypick app: %v", err)
+	}
 	workspaceStatus = gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
 	if workspaceStatus != "" {
-		t.Fatalf("workspace git status after discard = %q, want clean", workspaceStatus)
-	}
-	if err := CherryPick("app", commit); err != nil {
-		t.Fatalf("repeat cherrypick app after workspace discard: %v", err)
-	}
-	workspaceStatus = gitTest(t, filepath.Join(root, "workspace"), "status", "--porcelain")
-	if !strings.Contains(workspaceStatus, " M app/README.md") {
-		t.Fatalf("workspace git status after repeat = %q, want app/README.md modified", workspaceStatus)
+		t.Fatalf("workspace git status after repeat = %q, want clean", workspaceStatus)
 	}
 }
 
