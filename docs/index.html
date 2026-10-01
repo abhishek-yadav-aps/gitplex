@@ -9,7 +9,7 @@
       content="Gitplex creates a generated multi-repo workspace while keeping every backing repository separate, clean, and publishable."
     >
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f4f1e8'/%3E%3Cpath d='M7 8h18v4H11v8h14v4H7z' fill='%230d1117'/%3E%3Cpath d='M13 14h12v4H13z' fill='%23b85c18'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="styles.css?v=20260929-workflows">
+    <link rel="stylesheet" href="styles.css?v=20261001-features">
   </head>
   <body>
     <header class="topbar">
@@ -29,7 +29,7 @@
     <main id="top">
       <section class="hero grid-section" aria-labelledby="hero-title">
         <div class="release-strip">
-          <a href="https://github.com/abhishek-yadav-aps/gitplex/releases/tag/v0.1.12">latest stable v0.1.12 / planning + recovery workflows now on main</a>
+          <a href="https://github.com/abhishek-yadav-aps/gitplex/releases/tag/v0.1.21">latest stable v0.1.21 / coordinated workflows, recovery, and workspace tooling</a>
         </div>
 
         <div class="hero-frame">
@@ -264,6 +264,84 @@ $ gitplex workspace-mode
 $ gitplex repo-mode app-gateway
 /Users/you/project/.gitplex/repos/app-gateway</code></pre>
         </div>
+
+        <div class="feature-inventory" aria-label="Complete Gitplex feature inventory">
+          <article>
+            <span>01 / START + SYNC</span>
+            <h3>Create a safe workspace</h3>
+            <p>Validate manifests, automatically discover module roots, clone configured refs, fast-forward every backing clone, and regenerate the workspace when required.</p>
+            <code>init · validate · pull · workspace-mode</code>
+          </article>
+          <article>
+            <span>02 / INSPECT + OWNERSHIP</span>
+            <h3>Know what owns a file</h3>
+            <p>Inspect state, scoped diffs, merged histories, dependency edges, downstream impact, and the exact backing-repository owner for a workspace path.</p>
+            <code>status · diff · log · graph · affected · which</code>
+          </article>
+          <article>
+            <span>03 / BRANCH + HISTORY</span>
+            <h3>Move every repo deliberately</h3>
+            <p>Create a coordinated branch, checkout one or all repositories, rebase onto an upstream branch, cherry-pick a targeted commit, or amend the last workspace-derived commit.</p>
+            <code>branch · checkout · rebase · cherry-pick · amend</code>
+          </article>
+          <article>
+            <span>04 / CONFLICT WORKFLOWS</span>
+            <h3>Resolve in the workspace</h3>
+            <p>Rebase and cherry-pick conflicts are surfaced in the generated workspace. Continue repeatedly as Git reaches later commits, or abort and restore every touched repository head.</p>
+            <code>rebase --continue|--abort · cherry-pick --continue|--abort</code>
+          </article>
+          <article>
+            <span>05 / COMMIT + PUBLISH</span>
+            <h3>Ship staged intent</h3>
+            <p>Preview affected repositories and dependency order, prepare local commits, push with remote-ref verification, update downstream flake inputs, and resume an interrupted publish.</p>
+            <code>commit · push · push --dry-run · push --resume</code>
+          </article>
+          <article>
+            <span>06 / BUILD + TOOLING</span>
+            <h3>Keep the environment close</h3>
+            <p>Build with Nix or without substitutes, run workspace-only stash commands, diagnose project health, navigate through a shell helper, install the VS Code ownership extension, and update Gitplex itself.</p>
+            <code>build · true-build · stash · doctor · shell-init · repo-mode · install-extensions · update</code>
+          </article>
+        </div>
+
+        <section class="command-reference" aria-labelledby="command-reference-title">
+          <div class="command-reference-head">
+            <p class="section-index">[ COMPLETE REFERENCE ]</p>
+            <h3 id="command-reference-title">Every shipped command, in one place.</h3>
+            <p>The command surface below mirrors Gitplex’s built-in help, including JSON output, recovery actions, and workspace-only utility commands.</p>
+          </div>
+          <dl>
+            <div><dt><code>init &lt;manifest.yaml&gt;</code></dt><dd>Clone the manifest’s backing repositories and generate the workspace.</dd></div>
+            <div><dt><code>which [--json] &lt;path&gt;</code></dt><dd>Show a file’s source repository, generated status, and publish eligibility.</dd></div>
+            <div><dt><code>status [--json]</code></dt><dd>Report workspace changes, repository branches, divergence, and push readiness.</dd></div>
+            <div><dt><code>validate [manifest.yaml]</code></dt><dd>Reject unsafe fields, mappings, paths, dependencies, and graph cycles.</dd></div>
+            <div><dt><code>diff [repo] [--staged]</code></dt><dd>Show workspace changes grouped by their owning repository.</dd></div>
+            <div><dt><code>log [repo] [--limit N] [--json]</code></dt><dd>Show a time-ordered history across the backing repositories.</dd></div>
+            <div><dt><code>graph [--json]</code></dt><dd>Print dependency edges and topological execution order.</dd></div>
+            <div><dt><code>affected [repo...] [--json]</code></dt><dd>Show changed repositories and their downstream dependency cascade.</dd></div>
+            <div><dt><code>doctor</code></dt><dd>Run preflight checks for tools, graph validity, workspace sync, and repository state.</dd></div>
+            <div><dt><code>install-extensions</code></dt><dd>Install the bundled Gitplex ownership extension into VS Code.</dd></div>
+            <div><dt><code>update</code></dt><dd>Replace the current executable with the latest Gitplex release.</dd></div>
+            <div><dt><code>pull</code></dt><dd>Fast-forward backing repositories and refresh the generated workspace.</dd></div>
+            <div><dt><code>stash [git-stash-args...]</code></dt><dd>Pass a stash command through to the generated workspace only.</dd></div>
+            <div><dt><code>build</code></dt><dd>Run the normal Nix workspace build and configured cache workflow.</dd></div>
+            <div><dt><code>true-build</code></dt><dd>Build the workspace without Nix substitutes.</dd></div>
+            <div><dt><code>shell-init</code></dt><dd>Print the shell helper that lets navigation commands change your current directory.</dd></div>
+            <div><dt><code>repo-mode [--print] &lt;repo&gt;</code></dt><dd>Enter a backing repository through the shell helper, or print its path for scripts.</dd></div>
+            <div><dt><code>workspace-mode [--force]</code></dt><dd>Rebuild the workspace from backing clones and print its path.</dd></div>
+            <div><dt><code>checkout [repo] &lt;branch&gt;</code></dt><dd>Checkout one repository or all repositories to a branch, then refresh.</dd></div>
+            <div><dt><code>rebase [repo] &lt;branch&gt;</code></dt><dd>Rebase selected repositories onto an upstream branch.</dd></div>
+            <div><dt><code>rebase --continue | --abort</code></dt><dd>Continue a workspace-resolved rebase conflict, or restore all touched heads.</dd></div>
+            <div><dt><code>cherrypick &lt;repo&gt; &lt;commit&gt;</code></dt><dd>Cherry-pick one commit into a selected backing repository. <code>cherry-pick</code> is an alias.</dd></div>
+            <div><dt><code>cherrypick --continue | --abort</code></dt><dd>Continue a workspace-resolved cherry-pick conflict, or restore all touched heads.</dd></div>
+            <div><dt><code>branch &lt;branch&gt;</code></dt><dd>Create or reset the same branch in every backing repository.</dd></div>
+            <div><dt><code>amend [--message &lt;message&gt;]</code></dt><dd>Rewrite the last backing-repository commits from current workspace changes.</dd></div>
+            <div><dt><code>commit [--message &lt;message&gt;]</code></dt><dd>Prepare local backing-repository commits without publishing them.</dd></div>
+            <div><dt><code>push [--message &lt;message&gt;]</code></dt><dd>Commit and publish changes, or publish commits prepared by <code>commit</code>.</dd></div>
+            <div><dt><code>push --dry-run [--json]</code></dt><dd>Preview staged files, target branches, dependency cascade, and execution order.</dd></div>
+            <div><dt><code>push --resume</code></dt><dd>Resume a failed or interrupted publish from its durable journal.</dd></div>
+          </dl>
+        </section>
       </section>
 
       <section id="safety" class="section safety">
@@ -325,8 +403,9 @@ $ gitplex repo-mode app-gateway
           <p class="section-index">[ 05 ] /install</p>
           <h2>Install the binary. Bring a manifest.</h2>
           <p>
-            Stable release v0.1.12 ships prebuilt macOS and Linux binaries for amd64 and arm64.
-            Planning and recovery commands are currently available on main and will ship in the next release.
+            Stable release v0.1.21 ships prebuilt macOS and Linux binaries for amd64 and arm64,
+            including coordinated publishing, recovery workflows, Nix builds, workspace navigation,
+            the ownership extension installer, and in-place updates.
           </p>
         </div>
 
@@ -342,9 +421,9 @@ $ gitplex repo-mode app-gateway
           </article>
           <article>
             <span>B / PIN A VERSION</span>
-            <button class="copy-command compact" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.12 sh">
+            <button class="copy-command compact" data-copy="curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.21 sh">
               <span>$</span>
-              <code>curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.12 sh</code>
+              <code>curl -fsSL https://raw.githubusercontent.com/abhishek-yadav-aps/gitplex/main/scripts/install.sh | GITPLEX_VERSION=v0.1.21 sh</code>
               <span class="copy-label">COPY</span>
             </button>
             <p>Use a known release for teammate rollouts.</p>
